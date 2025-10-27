@@ -9,35 +9,90 @@ The backend is intentionally minimal, consisting of serverless Lambda functions 
 ## Architecture
 
 ```
-┌─────────────┐         ┌──────────────┐         ┌─────────────┐
-│   Frontend  │────────▶│   Lambda     │────────▶│   Spotify   │
-│  (Browser)  │         │  Functions   │         │     API     │
-└─────────────┘         └──────────────┘         └─────────────┘
-      │                                                  │
-      │                                                  │
-      └──────────────────────────────────────────────────┘
-              Direct API calls with user token
+┌─────────────────────────────────────────────────────────┐
+│                    CloudFront + WAF                     │
+│                 (Public Internet)                       │
+└────────────────────────┬────────────────────────────────┘
+                         │ HTTPS (Only entry point)
+                         ▼
+                  ┌──────────────┐
+                  │ VPC Endpoint │
+                  │ (API Gateway)│
+                  └──────┬───────┘
+                         │
+        ┌────────────────┴────────────────┐
+        │            VPC                  │
+        │  Private Subnets (No Internet)  │
+        │                                 │
+        │  ┌──────────────┐               │
+        │  │ API Gateway  │               │
+        │  │  (Private)   │               │
+        │  └──────┬───────┘               │
+        │         │                       │
+        │         ▼                       │
+        │  ┌──────────────┐               │
+        │  │   Lambda     │───────NAT─────┼──▶ Spotify API
+        │  │  Functions   │    Gateway    │    SoundCloud API
+        │  └──────┬───────┘               │
+        │         │                       │
+        │         ▼                       │
+        │  VPC Endpoints (Private):      │
+        │  ┌──────────────┐              │
+        │  │  DynamoDB    │              │
+        │  │  Secrets Mgr │              │
+        │  │  CloudWatch  │              │
+        │  └──────────────┘              │
+        └─────────────────────────────────┘
+
+Frontend (Browser)
+      │
+      │ Direct API calls with user token
+      ▼
+┌─────────────┐
+│   Spotify   │
+│ SoundCloud  │
+│     APIs    │
+└─────────────┘
 ```
 
 **Key Principle**: The backend only handles authentication. All music-related API calls (search, playback, playlists) go directly from the frontend to the streaming service APIs using the user's access token.
+
+**Security Model**: Private API Gateway accessible ONLY through CloudFront + WAF. Network-level isolation ensures no direct internet access to API Gateway.
 
 ## Why This Approach?
 
 - **No rate limiting issues**: Each user uses their own API quota
 - **Better performance**: No backend proxy bottleneck
-- **Lower costs**: Minimal Lambda invocations
+- **Lower costs**: Minimal Lambda invocations (only for OAuth)
 - **Scalability**: Frontend scales infinitely via CDN
+- **Security**: Private API Gateway + CloudFront + WAF provides enterprise-grade protection
+- **Network Isolation**: API Gateway physically inaccessible from internet, only accessible through VPC endpoint
+
+## Tech Stack
 
 ## Tech Stack
 
 **Primary Stack:**
 - Python 3.13
-- FastAPI (API framework)
+- FastAPI (for local development)
 - AWS Lambda (Python runtime)
-- API Gateway (REST API)
-- DynamoDB (token storage)
-- AWS Secrets Manager (OAuth secrets)
+- API Gateway (Private - VPC endpoint only)
+- CloudFront + WAF (DDoS protection, rate limiting)
+- VPC (Private subnets, NAT Gateway)
+- DynamoDB (token storage via VPC endpoint)
+- AWS Secrets Manager (OAuth secrets via VPC endpoint)
 - Boto3 (AWS SDK)
+
+**Infrastructure:**
+- VPC with private subnets (10.0.0.0/16)
+- NAT Gateway (for Lambda to call external OAuth APIs)
+- VPC Endpoints:
+  - API Gateway (Interface endpoint)
+  - DynamoDB (Gateway endpoint - free)
+  - Secrets Manager (Interface endpoint)
+  - CloudWatch Logs (Interface endpoint)
+- CloudFront Distribution (single entry point)
+- AWS WAF Web ACL (DDoS, rate limiting, bot protection)
 
 ## API Endpoints
 
@@ -138,7 +193,33 @@ uvicorn main:app --reload --port 8000
 
 ### Deployment
 
-**Option 1: AWS SAM (Recommended)**
+**Using Terraform (Recommended for this project)**
+
+The infrastructure will be written in Terraform, including:
+- VPC with private subnets and NAT Gateway
+- VPC Endpoints (API Gateway, DynamoDB, Secrets Manager, CloudWatch)
+- Private API Gateway with resource policy
+- Lambda functions with VPC configuration
+- CloudFront distribution with WAF
+- DynamoDB tables
+- IAM roles and policies
+- Security groups
+
+```bash
+# Initialize Terraform
+terraform init
+
+# Plan deployment
+terraform plan -out=tfplan
+
+# Apply infrastructure
+terraform apply tfplan
+
+# Destroy (when needed)
+terraform destroy
+```
+
+**Alternative: AWS SAM**
 ```bash
 # Install SAM CLI
 pip install aws-sam-cli
@@ -150,29 +231,7 @@ sam build
 sam deploy --guided
 ```
 
-**Option 2: Serverless Framework**
-```bash
-# Install Serverless Framework
-npm install -g serverless
-pip install serverless-python-requirements
-
-# Deploy to AWS
-serverless deploy --stage prod
-```
-
-**Option 3: Terraform**
-```bash
-# Initialize
-terraform init
-
-# Plan
-terraform plan
-
-# Apply
-terraform apply
-```
-
-**Option 4: AWS CDK (Python)**
+**Alternative: AWS CDK (Python)**
 ```bash
 # Install CDK
 pip install aws-cdk-lib
@@ -204,7 +263,7 @@ backend/
 │   ├── unit/
 │   └── integration/
 ├── requirements.txt            # Python dependencies
-├── template.yaml              # SAM template
+├── template.yaml              # SAM template (optional)
 ├── serverless.yml             # Serverless config (optional)
 ├── .env.example
 └── README.md
@@ -212,21 +271,36 @@ backend/
 
 ## Security Considerations
 
-### Token Storage
+### Network Security
+- **Private API Gateway**: Only accessible via VPC endpoint, no public internet access
+- **CloudFront as sole entry point**: All traffic must go through CloudFront + WAF
+- **VPC isolation**: Lambda functions in private subnets with no direct internet access
+- **NAT Gateway**: Controlled outbound access for OAuth API calls only
+
+### Application Security
 - All tokens encrypted at rest using AWS KMS
 - Refresh tokens stored in DynamoDB with TTL
 - Access tokens never logged
+- JWT tokens for session management
+- OAuth secrets stored in AWS Secrets Manager
+- Never commit secrets to version control
+- Rotate secrets regularly
+
+### WAF Protection
+- **Rate Limiting**: 100 requests per 5 minutes per IP
+- **AWS Managed Rules**:
+  - Core Rule Set (OWASP Top 10)
+  - Known Bad Inputs
+  - IP Reputation Lists
+- **DDoS Protection**: Automatic mitigation via CloudFront + WAF
+- **Bot Detection**: AWS Managed Bot Control
 
 ### API Security
 - CORS restricted to frontend domain
 - Rate limiting per user/IP
-- JWT tokens for session management
 - HTTPS only in production
-
-### Secrets Management
-- OAuth secrets stored in AWS Secrets Manager
-- Never commit secrets to version control
-- Rotate secrets regularly
+- Request validation at API Gateway
+- Lambda function isolation via IAM roles
 
 ## Rate Limiting
 
@@ -238,46 +312,94 @@ Lambda functions have minimal rate limiting since they only handle OAuth flows:
 ## Monitoring & Logging
 
 **CloudWatch Metrics:**
-- Lambda invocation count
-- Error rates
-- Duration
-- DynamoDB read/write capacity
+- Lambda invocation count and errors
+- API Gateway 4xx/5xx errors
+- DynamoDB read/write capacity and throttling
+- NAT Gateway bytes processed
+- VPC Endpoint connections
 
 **CloudWatch Logs:**
-- All Lambda function logs
-- Structured JSON logging
-- Error tracking with stack traces
+- Lambda function logs (structured JSON)
+- API Gateway access logs
+- WAF logs (sampled to control costs)
 
-**Alerts:**
-- High error rate (>5%)
-- Token refresh failures
-- DynamoDB throttling
+**CloudWatch Alarms:**
+- High WAF block rate (> 10% of requests)
+- API Gateway error rate (> 5%)
+- Lambda errors or timeouts
+- DynamoDB throttling events
+- High latency (> 1 second p99)
+- NAT Gateway connection errors
+
+**AWS WAF Monitoring:**
+- Blocked requests by rule
+- Top blocked IPs
+- Request patterns and anomalies
+- Bot detection metrics
 
 ## Cost Estimation
 
-**Monthly costs (assuming 10,000 users):**
-- Lambda invocations: ~$0.20
-- API Gateway: ~$3.50
-- DynamoDB: ~$2.50
-- CloudWatch Logs: ~$1.00
-- **Total: ~$7-10/month**
+**Monthly costs for 10,000 active users:**
 
-Most costs scale linearly with active users.
+**Networking:**
+- NAT Gateway: ~$32.00 (required for Lambda to call Spotify/SoundCloud OAuth APIs)
+- NAT Data Transfer: ~$4.50
+- VPC Endpoints (Interface): ~$7.20/month (API Gateway, Secrets, CloudWatch)
+- VPC Endpoint (Gateway): $0.00 (DynamoDB - free)
+
+**CDN & Security:**
+- CloudFront Requests: ~$0.50
+- CloudFront Data Transfer: ~$1.00
+- AWS WAF Web ACL: ~$5.00
+- WAF Rules (3 custom): ~$3.00
+- WAF Request Charges: ~$1.00
+
+**Compute & Storage:**
+- Lambda Invocations: ~$0.20
+- Lambda Duration: ~$0.50
+- API Gateway Requests: ~$3.50
+- DynamoDB (on-demand): ~$2.50
+- Secrets Manager: ~$0.40
+
+**Total: ~$61/month for 10,000 users**
+
+**Cost Breakdown:**
+- ~70% networking (NAT Gateway + VPC Endpoints)
+- ~15% security (WAF)
+- ~15% compute & storage
+
+**Note:** Most costs scale linearly with active users. NAT Gateway is a fixed cost regardless of traffic volume.
+
+**Cost Optimization Option:**
+Split Lambda functions to avoid NAT Gateway:
+- OAuth functions outside VPC (call Spotify/SoundCloud): ~$0.20/mo
+- User management functions in VPC (DynamoDB only): ~$0.30/mo
+- **Savings:** ~$37/month
+- **Trade-off:** Slightly more complex architecture
 
 ## Roadmap
 
 - [x] Architecture planning
-- [ ] Spotify OAuth implementation
-- [ ] DynamoDB setup
-- [ ] Token encryption
-- [ ] JWT session management
+- [x] Security design (Private API Gateway + CloudFront + WAF)
+- [ ] Terraform infrastructure code
+  - [ ] VPC and networking
+  - [ ] Private API Gateway with VPC endpoint
+  - [ ] CloudFront + WAF configuration
+  - [ ] Lambda functions with VPC config
+  - [ ] DynamoDB tables
+  - [ ] IAM roles and policies
+- [ ] Python application code
+  - [ ] Spotify OAuth implementation
+  - [ ] Token encryption utilities
+  - [ ] DynamoDB operations
+  - [ ] JWT session management
 - [ ] SoundCloud OAuth implementation
 - [ ] YouTube Music OAuth
 - [ ] Token refresh automation
-- [ ] Rate limiting
-- [ ] Monitoring & alerting
+- [ ] Monitoring & alerting setup
 - [ ] CI/CD pipeline
 - [ ] Load testing
+- [ ] Documentation
 
 ## Development Workflow
 
