@@ -1,256 +1,436 @@
-# MultiMusic Platform - Backend Setup Guide
+# MultiMusic Platform - Backend
 
-## Quick Start
+Backend services for the MultiMusic Platform, handling OAuth authentication flows and token management for multiple streaming services.
 
-### 1. Clone and Setup
+## Overview
+
+The backend is intentionally minimal, consisting of serverless Lambda functions that handle OAuth callbacks and token refresh operations. The architecture keeps API requests client-side to avoid rate limiting and improve performance.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    CloudFront + WAF                     │
+│                 (Public Internet)                       │
+└────────────────────────┬────────────────────────────────┘
+                         │ HTTPS (Only entry point)
+                         ▼
+                  ┌──────────────┐
+                  │ VPC Endpoint │
+                  │ (API Gateway)│
+                  └──────┬───────┘
+                         │
+        ┌────────────────┴────────────────┐
+        │            VPC                  │
+        │  Private Subnets (No Internet)  │
+        │                                 │
+        │  ┌──────────────┐               │
+        │  │ API Gateway  │               │
+        │  │  (Private)   │               │
+        │  └──────┬───────┘               │
+        │         │                       │
+        │         ▼                       │
+        │  ┌──────────────┐               │
+        │  │   Lambda     │───────NAT─────┼──▶ Spotify API
+        │  │  Functions   │    Gateway    │    SoundCloud API
+        │  └──────┬───────┘               │
+        │         │                       │
+        │         ▼                       │
+        │  VPC Endpoints (Private):      │
+        │  ┌──────────────┐              │
+        │  │  DynamoDB    │              │
+        │  │  Secrets Mgr │              │
+        │  │  CloudWatch  │              │
+        │  └──────────────┘              │
+        └─────────────────────────────────┘
+
+Frontend (Browser)
+      │
+      │ Direct API calls with user token
+      ▼
+┌─────────────┐
+│   Spotify   │
+│ SoundCloud  │
+│     APIs    │
+└─────────────┘
+```
+
+**Key Principle**: The backend only handles authentication. All music-related API calls (search, playback, playlists) go directly from the frontend to the streaming service APIs using the user's access token.
+
+**Security Model**: Private API Gateway accessible ONLY through CloudFront + WAF. Network-level isolation ensures no direct internet access to API Gateway.
+
+## Why This Approach?
+
+- **No rate limiting issues**: Each user uses their own API quota
+- **Better performance**: No backend proxy bottleneck
+- **Lower costs**: Minimal Lambda invocations (only for OAuth)
+- **Scalability**: Frontend scales infinitely via CDN
+- **Security**: Private API Gateway + CloudFront + WAF provides enterprise-grade protection
+- **Network Isolation**: API Gateway physically inaccessible from internet, only accessible through VPC endpoint
+
+## Tech Stack
+
+## Tech Stack
+
+**Primary Stack:**
+- Python 3.13
+- FastAPI (for local development)
+- AWS Lambda (Python runtime)
+- API Gateway (Private - VPC endpoint only)
+- CloudFront + WAF (DDoS protection, rate limiting)
+- VPC (Private subnets, NAT Gateway)
+- DynamoDB (token storage via VPC endpoint)
+- AWS Secrets Manager (OAuth secrets via VPC endpoint)
+- Boto3 (AWS SDK)
+
+**Infrastructure:**
+- VPC with private subnets (10.0.0.0/16)
+- NAT Gateway (for Lambda to call external OAuth APIs)
+- VPC Endpoints:
+  - API Gateway (Interface endpoint)
+  - DynamoDB (Gateway endpoint - free)
+  - Secrets Manager (Interface endpoint)
+  - CloudWatch Logs (Interface endpoint)
+- CloudFront Distribution (single entry point)
+- AWS WAF Web ACL (DDoS, rate limiting, bot protection)
+
+## API Endpoints
+
+### Spotify Authentication
+
+**POST /auth/spotify/login**
+- Initiates Spotify OAuth flow
+- Returns authorization URL
+- No authentication required
+
+**GET /auth/spotify/callback**
+- Handles OAuth callback from Spotify
+- Exchanges authorization code for access/refresh tokens
+- Stores tokens in DynamoDB
+- Redirects to frontend with session token
+
+**POST /auth/spotify/refresh**
+- Refreshes expired access token
+- Requires session token
+- Returns new access token
+
+### SoundCloud Authentication (Coming Soon)
+
+**POST /auth/soundcloud/login**
+**GET /auth/soundcloud/callback**
+**POST /auth/soundcloud/refresh**
+
+## Database Schema
+
+### Users Table (DynamoDB)
+
+```
+PK: userId (String)
+SK: platform#platformName (String)
+---
+accessToken: String (encrypted)
+refreshToken: String (encrypted)
+expiresAt: Number (timestamp)
+createdAt: Number (timestamp)
+updatedAt: Number (timestamp)
+```
+
+## Environment Variables
 
 ```bash
-# Navigate to backend directory
+# Spotify
+SPOTIFY_CLIENT_ID=<your-client-id>
+SPOTIFY_CLIENT_SECRET=<your-client-secret>
+SPOTIFY_REDIRECT_URI=<your-api-gateway-url>/auth/spotify/callback
+
+# SoundCloud
+SOUNDCLOUD_CLIENT_ID=<your-client-id>
+SOUNDCLOUD_CLIENT_SECRET=<your-client-secret>
+SOUNDCLOUD_REDIRECT_URI=<your-api-gateway-url>/auth/soundcloud/callback
+
+# Database
+DYNAMODB_TABLE_NAME=multimusic-tokens
+DYNAMODB_REGION=us-east-1
+
+# Frontend
+FRONTEND_URL=https://your-frontend-url.com
+
+# Security
+JWT_SECRET=<your-jwt-secret>
+ENCRYPTION_KEY=<your-encryption-key>
+```
+
+## Setup Instructions
+
+### Prerequisites
+
+- AWS Account
+- Python 3.13+
+- AWS CLI configured
+- pip and virtualenv
+
+### Local Development
+
+```bash
+# Clone the repository
+git clone <your-repo-url>
 cd multimusic-platform-backend
 
 # Create virtual environment
 python3.13 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-pip install -r requirements-dev.txt
-```
 
-### 2. Configure Environment
-
-```bash
-# Copy example environment file
+# Set up environment variables
 cp .env.example .env
+# Edit .env with your credentials
 
-# Edit .env and add your values
-# Required for local development:
-# - SPOTIFY_CLIENT_ID
-# - SPOTIFY_CLIENT_SECRET
-# - JWT_SECRET (generate a random string)
-# - ENCRYPTION_KEY (generate a random 32-char string)
+# Run locally with FastAPI
+uvicorn main:app --reload --port 8000
 ```
 
-### 3. Run DynamoDB Local (Optional)
+### Deployment
+
+**Using Terraform (Recommended for this project)**
+
+The infrastructure will be written in Terraform, including:
+- VPC with private subnets and NAT Gateway
+- VPC Endpoints (API Gateway, DynamoDB, Secrets Manager, CloudWatch)
+- Private API Gateway with resource policy
+- Lambda functions with VPC configuration
+- CloudFront distribution with WAF
+- DynamoDB tables
+- IAM roles and policies
+- Security groups
 
 ```bash
-cd local
-docker-compose up -d
+# Initialize Terraform
+terraform init
 
-# Verify DynamoDB is running
-curl http://localhost:8000
+# Plan deployment
+terraform plan -out=tfplan
 
-# Access DynamoDB Admin UI (optional)
-# http://localhost:8001
+# Apply infrastructure
+terraform apply tfplan
+
+# Destroy (when needed)
+terraform destroy
 ```
 
-### 4. Create DynamoDB Tables (Local)
-
+**Alternative: AWS SAM**
 ```bash
-# Run the table creation script
-python scripts/create_tables.py
+# Install SAM CLI
+pip install aws-sam-cli
+
+# Build
+sam build
+
+# Deploy
+sam deploy --guided
 ```
 
-### 5. Start Development Server
-
+**Alternative: AWS CDK (Python)**
 ```bash
-cd local
-python app.py
+# Install CDK
+pip install aws-cdk-lib
 
-# Or use uvicorn directly
-uvicorn app:app --reload --port 8000
+# Deploy
+cdk deploy
 ```
-
-Server will be running at: `http://localhost:8000`
-
-## Testing the API
-
-### Using curl
-
-**1. Initiate Spotify Login**
-```bash
-curl -X POST http://localhost:8000/auth/spotify/login
-```
-
-Response:
-```json
-{
-  "authUrl": "https://accounts.spotify.com/authorize?...",
-  "state": "random-state-string"
-}
-```
-
-**2. Test Health Endpoint**
-```bash
-curl http://localhost:8000/health
-```
-
-### Using the Frontend
-
-1. Start the frontend (from frontend directory)
-2. Update frontend to point to `http://localhost:8000` for backend
-3. Complete the OAuth flow through the UI
 
 ## Project Structure
 
 ```
-multimusic-platform-backend/
+backend/
 ├── src/
-│   ├── handlers/           # Lambda function handlers
-│   │   ├── spotify_auth.py
-│   │   └── user.py
-│   ├── services/           # Business logic services
-│   │   ├── token_service.py
-│   │   ├── jwt_service.py
-│   │   └── dynamodb_service.py
-│   └── utils/              # Utility functions
-│       └── responses.py
-├── local/
-│   ├── app.py             # FastAPI local development server
-│   └── docker-compose.yml # DynamoDB Local
+│   ├── handlers/
+│   │   ├── spotify.py          # Spotify OAuth handlers
+│   │   ├── soundcloud.py       # SoundCloud OAuth handlers
+│   │   └── token.py            # Token refresh handlers
+│   ├── services/
+│   │   ├── oauth.py            # OAuth helper functions
+│   │   ├── encryption.py       # Token encryption
+│   │   └── dynamodb.py         # Database operations
+│   ├── middleware/
+│   │   ├── auth.py             # JWT verification
+│   │   └── cors.py             # CORS configuration
+│   └── utils/
+│       ├── logger.py           # Logging utility
+│       └── errors.py           # Error handling
 ├── tests/
-│   ├── unit/              # Unit tests
-│   └── integration/       # Integration tests
-└── scripts/
-    └── create_tables.py   # DynamoDB table creation
+│   ├── unit/
+│   └── integration/
+├── terraform/                  # Terraform infrastructure code
+│   ├── main.tf
+│   ├── vpc.tf
+│   ├── api_gateway.tf
+│   ├── lambda.tf
+│   ├── cloudfront.tf
+│   ├── waf.tf
+│   ├── dynamodb.tf
+│   ├── variables.tf
+│   └── outputs.tf
+├── requirements.txt            # Python dependencies
+├── template.yaml              # SAM template (optional)
+├── serverless.yml             # Serverless config (optional)
+├── .env.example
+└── README.md
 ```
 
-## Running Tests
+## Security Considerations
 
-```bash
-# Run all tests
-pytest
+### Network Security
+- **Private API Gateway**: Only accessible via VPC endpoint, no public internet access
+- **CloudFront as sole entry point**: All traffic must go through CloudFront + WAF
+- **VPC isolation**: Lambda functions in private subnets with no direct internet access
+- **NAT Gateway**: Controlled outbound access for OAuth API calls only
 
-# Run with coverage
-pytest --cov=src
+### Application Security
+- All tokens encrypted at rest using AWS KMS
+- Refresh tokens stored in DynamoDB with TTL
+- Access tokens never logged
+- JWT tokens for session management
+- OAuth secrets stored in AWS Secrets Manager
+- Never commit secrets to version control
+- Rotate secrets regularly
 
-# Run specific test file
-pytest tests/unit/test_token_service.py
+### WAF Protection
+- **Rate Limiting**: 100 requests per 5 minutes per IP
+- **AWS Managed Rules**:
+  - Core Rule Set (OWASP Top 10)
+  - Known Bad Inputs
+  - IP Reputation Lists
+- **DDoS Protection**: Automatic mitigation via CloudFront + WAF
+- **Bot Detection**: AWS Managed Bot Control
 
-# Run with verbose output
-pytest -v
-```
+### API Security
+- CORS restricted to frontend domain
+- Rate limiting per user/IP
+- HTTPS only in production
+- Request validation at API Gateway
+- Lambda function isolation via IAM roles
 
-## Local Development Tips
+## Rate Limiting
 
-### Using DynamoDB Local
+Lambda functions have minimal rate limiting since they only handle OAuth flows:
+- Login endpoint: 10 requests/minute per IP
+- Callback endpoint: No limit (single use)
+- Refresh endpoint: 20 requests/minute per user
 
-DynamoDB Local allows you to develop without AWS credentials:
+## Monitoring & Logging
 
-```bash
-# Start DynamoDB Local
-docker-compose up -d
+**CloudWatch Metrics:**
+- Lambda invocation count and errors
+- API Gateway 4xx/5xx errors
+- DynamoDB read/write capacity and throttling
+- NAT Gateway bytes processed
+- VPC Endpoint connections
 
-# Check logs
-docker-compose logs -f dynamodb-local
+**CloudWatch Logs:**
+- Lambda function logs (structured JSON)
+- API Gateway access logs
+- WAF logs (sampled to control costs)
 
-# Stop
-docker-compose down
-```
+**CloudWatch Alarms:**
+- High WAF block rate (> 10% of requests)
+- API Gateway error rate (> 5%)
+- Lambda errors or timeouts
+- DynamoDB throttling events
+- High latency (> 1 second p99)
+- NAT Gateway connection errors
 
-### Environment Variables for Local Dev
+**AWS WAF Monitoring:**
+- Blocked requests by rule
+- Top blocked IPs
+- Request patterns and anomalies
+- Bot detection metrics
+\
+## Roadmap
 
-```bash
-# .env for local development
-ENVIRONMENT=local
-DYNAMODB_ENDPOINT=http://localhost:8000
-SPOTIFY_REDIRECT_URI=http://localhost:8000/auth/spotify/callback
-FRONTEND_URL=http://127.0.0.1:8081
-```
+- [x] Architecture planning
+- [x] Security design (Private API Gateway + CloudFront + WAF)
+- [ ] Terraform infrastructure code
+  - [ ] VPC and networking
+  - [ ] Private API Gateway with VPC endpoint
+  - [ ] CloudFront + WAF configuration
+  - [ ] Lambda functions with VPC config
+  - [ ] DynamoDB tables
+  - [ ] IAM roles and policies
+- [ ] Python application code
+  - [ ] Spotify OAuth implementation
+  - [ ] Token encryption utilities
+  - [ ] DynamoDB operations
+  - [ ] JWT session management
+- [ ] SoundCloud OAuth implementation
+- [ ] YouTube Music OAuth
+- [ ] Token refresh automation
+- [ ] Monitoring & alerting setup
+- [ ] CI/CD pipeline
+- [ ] Load testing
+- [ ] Documentation
 
-### Hot Reload
+## Development Workflow
 
-FastAPI supports hot reload - any code changes will automatically restart the server:
+1. **Local testing**: Use AWS SAM Local or run FastAPI directly
+2. **Unit tests**: Run `pytest` before commits
+3. **Integration tests**: Test against staging environment
+4. **Deploy to staging**: `sam deploy --config-env staging`
+5. **Manual testing**: Verify OAuth flows work
+6. **Deploy to production**: `sam deploy --config-env prod`
 
-```bash
-uvicorn local.app:app --reload
-```
+## Troubleshooting
 
-## Debugging
+### OAuth Callback Fails
+- Check redirect URI matches exactly in platform settings
+- Verify CloudFront distribution is active
+- Check VPC endpoint connectivity
+- Verify API Gateway resource policy allows VPC endpoint
+- Check Lambda VPC configuration and security groups
+- Review CloudWatch logs for detailed errors
 
-### Enable Debug Logging
+### Token Refresh Issues
+- Verify refresh token hasn't expired
+- Check DynamoDB for token existence
+- Ensure OAuth secrets are correct in Secrets Manager
+- Verify Lambda has internet access via NAT Gateway
+- Check NAT Gateway status and routes
 
-```bash
-# In .env
-LOG_LEVEL=DEBUG
-```
+### High Latency
+- Check Lambda cold start times (VPC can add 1-2s)
+- Review NAT Gateway metrics
+- Verify DynamoDB on-demand capacity
+- Check CloudFront cache hit ratio
+- Review API Gateway integration timeout settings
 
-### Using Python Debugger
+### Lambda Cannot Reach Internet
+- Verify NAT Gateway is in public subnet
+- Check route table has route to NAT Gateway (0.0.0.0/0)
+- Verify security groups allow outbound HTTPS (443)
+- Check VPC endpoint DNS resolution
 
-```python
-# Add breakpoint in code
-import pdb; pdb.set_trace()
+### API Gateway 403 Errors
+- Verify request coming from VPC endpoint (check source VPC endpoint ID)
+- Check API Gateway resource policy
+- Review CloudFront origin configuration
+- Verify VPC endpoint security groups
 
-# Or use Python 3.7+ breakpoint()
-breakpoint()
-```
+## Contributing
 
-### Check DynamoDB Tables
+1. Create feature branch from `main`
+2. Write tests for new functionality
+3. Ensure all tests pass
+4. Submit pull request
+5. Code review required before merge
 
-```bash
-# List tables
-aws dynamodb list-tables --endpoint-url http://localhost:8000
+## License
 
-# Scan a table
-aws dynamodb scan \
-  --table-name multimusic-tokens \
-  --endpoint-url http://localhost:8000
-```
+[Your chosen license]
 
-## Common Issues
+## Support
 
-### Issue: "ENCRYPTION_KEY not set"
-**Solution:** Add `ENCRYPTION_KEY` to your `.env` file
-```bash
-ENCRYPTION_KEY=your-32-character-encryption-key-here
-```
-
-### Issue: "Cannot connect to DynamoDB"
-**Solution:** Make sure DynamoDB Local is running
-```bash
-docker-compose ps
-docker-compose up -d
-```
-
-### Issue: "JWT_SECRET not set"
-**Solution:** Add `JWT_SECRET` to your `.env` file
-```bash
-JWT_SECRET=your-super-secret-jwt-key-change-in-production
-```
-
-### Issue: "Module not found" errors
-**Solution:** Make sure you're in the virtual environment and dependencies are installed
-```bash
-source venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
-```
-
-## Deploying to AWS
-
-See the main README for deployment instructions using Terraform.
-
-The Lambda handlers in `src/handlers/` are designed to work directly as Lambda functions:
-- `spotify_auth.login_handler`
-- `spotify_auth.callback_handler`
-- `spotify_auth.refresh_handler`
-
-## Next Steps
-
-1. ✅ Complete Spotify OAuth flow
-2. Add user management endpoints
-3. Add SoundCloud OAuth
-4. Write integration tests
-5. Set up CI/CD pipeline
-6. Deploy to AWS
-
-## API Documentation
-
-When running locally, visit:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-## Getting Help
-
-- Check CloudWatch Logs (when deployed)
-- Review test files for usage examples
-- Check the main README for architecture details
+For issues or questions:
+- Create an issue in GitHub
+- Check CloudWatch logs
+- Review API Gateway logs

@@ -11,10 +11,10 @@ import httpx
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from services.token_service import TokenService
-from services.dynamodb_service import DynamoDBService
-from services.jwt_service import JWTService
-from utils.responses import success_response, error_response, redirect_response
+from src.services.token_service import TokenService
+from src.services.dynamodb_service import DynamoDBService
+from src.services.jwt_service import JWTService
+from src.utils.responses import success_response, error_response, redirect_response
 
 logger = Logger()
 
@@ -29,6 +29,12 @@ token_service = TokenService()
 db_service = DynamoDBService()
 jwt_service = JWTService()
 
+
+# After all the imports and configuration section
+SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID')
+SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET')
+SPOTIFY_REDIRECT_URI = os.environ.get('SPOTIFY_REDIRECT_URI')
+FRONTEND_URL = os.environ.get('FRONTEND_URL')
 
 @logger.inject_lambda_context
 def login_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
@@ -159,12 +165,15 @@ def refresh_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, 
         # Parse request body
         body = json.loads(event.get('body', '{}'))
         session_token = body.get('sessionToken')
-        
+
         if not session_token:
             # Try to get from Authorization header
             headers = event.get('headers', {})
-            auth_header = headers.get('Authorization', '')
-            if auth_header.startswith('Bearer '):
+
+            # Try both cases
+            auth_header = headers.get('Authorization') or headers.get('authorization') or ''
+            
+            if auth_header and auth_header.startswith('Bearer '):
                 session_token = auth_header[7:]
         
         if not session_token:

@@ -18,8 +18,24 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Import Lambda handlers
-from src.handlers import spotify_auth
+# Import Lambda handlers - use explicit imports
+from src.handlers.spotify_auth import login_handler, callback_handler, refresh_handler
+
+
+# Mock Lambda Context for local development
+class MockLambdaContext:
+    """Mock Lambda context for local development"""
+    def __init__(self):
+        self.function_name = "local-dev"
+        self.memory_limit_in_mb = 128
+        self.invoked_function_arn = "arn:aws:lambda:eu-west-1:123456789012:function:local-dev"
+        self.aws_request_id = "local-request-id"
+        self.log_group_name = "/aws/lambda/local-dev"
+        self.log_stream_name = "local-stream"
+
+# Create mock context instance
+mock_context = MockLambdaContext()
+
 
 app = FastAPI(
     title="MultiMusic Platform API",
@@ -50,11 +66,19 @@ def lambda_to_fastapi_response(lambda_response: dict) -> Response:
             status_code=status_code
         )
     
+    # Parse body if it's a string
+    if isinstance(body, str) and body:
+        try:
+            import json
+            body = json.loads(body)
+        except:
+            pass
+    
     # Regular JSON response
     return JSONResponse(
-        content=body if isinstance(body, dict) else eval(body) if body else {},
+        content=body if body else {},
         status_code=status_code,
-        headers=headers
+        headers={k: v for k, v in headers.items() if k != 'Content-Type'}
     )
 
 
@@ -78,14 +102,16 @@ async def health():
 @app.post("/auth/spotify/login")
 async def spotify_login(request: Request):
     """Initiate Spotify OAuth login"""
+    body = await request.body()
+    
     event = {
         "httpMethod": "POST",
         "headers": dict(request.headers),
-        "body": await request.body(),
+        "body": body.decode() if body else '{}',
         "queryStringParameters": dict(request.query_params)
     }
     
-    lambda_response = spotify_auth.login_handler(event, None)
+    lambda_response = login_handler(event, mock_context)
     return lambda_to_fastapi_response(lambda_response)
 
 
@@ -98,7 +124,7 @@ async def spotify_callback(request: Request):
         "queryStringParameters": dict(request.query_params)
     }
     
-    lambda_response = spotify_auth.callback_handler(event, None)
+    lambda_response = callback_handler(event, mock_context)
     return lambda_to_fastapi_response(lambda_response)
 
 
@@ -106,7 +132,12 @@ async def spotify_callback(request: Request):
 async def spotify_refresh(request: Request):
     """Refresh Spotify access token"""
     body = await request.body()
-    
+    headers_dict = {}
+    for key, value in request.headers.items():
+        headers_dict[key] = value
+        # Also add capitalized version for Lambda compatibility
+        headers_dict[key.capitalize()] = value
+     
     event = {
         "httpMethod": "POST",
         "headers": dict(request.headers),
@@ -114,7 +145,7 @@ async def spotify_refresh(request: Request):
         "queryStringParameters": dict(request.query_params)
     }
     
-    lambda_response = spotify_auth.refresh_handler(event, None)
+    lambda_response = refresh_handler(event, mock_context)
     return lambda_to_fastapi_response(lambda_response)
 
 
@@ -133,4 +164,6 @@ async def disconnect_platform(platform: str, request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    print("🚀 Starting MultiMusic Platform API on http://localhost:8080")
+    print("📊 API docs available at http://localhost:8080/docs")
+    uvicorn.run(app, host="0.0.0.0", port=8080, reload=False)

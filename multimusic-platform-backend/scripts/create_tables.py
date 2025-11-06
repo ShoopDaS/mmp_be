@@ -58,15 +58,14 @@ def create_tokens_table():
                 {'AttributeName': 'userId', 'AttributeType': 'S'},
                 {'AttributeName': 'sk', 'AttributeType': 'S'}
             ],
-            BillingMode='PAY_PER_REQUEST',  # On-demand pricing
-            TimeToLiveSpecification={
-                'Enabled': True,
-                'AttributeName': 'ttl'
-            }
+            BillingMode='PAY_PER_REQUEST'  # On-demand pricing
         )
         
         table.wait_until_exists()
         print(f"✅ Created table: {table_name}")
+        
+        # Note: TTL is not supported in DynamoDB Local
+        # In production AWS, you can enable it via console or UpdateTimeToLive API
         
     except dynamodb.meta.client.exceptions.ResourceInUseException:
         print(f"⚠️  Table {table_name} already exists")
