@@ -8,3 +8,11 @@ httpx>=0.25.0
 
 # AWS Lambda
 aws-lambda-powertools>=2.31.0
+
+# FastAPI (for local development server)
+fastapi>=0.109.0
+uvicorn[standard]>=0.25.0
+python-dotenv>=1.0.0
+
+# Lambda adapter (optional - only needed for AWS deployment)
+mangum>=0.17.0
