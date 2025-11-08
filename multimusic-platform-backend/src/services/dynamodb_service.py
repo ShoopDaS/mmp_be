@@ -1,11 +1,12 @@
 """
-DynamoDB service for data persistence
+DynamoDB service for data operations
+Extended to support multi-provider SSO architecture
 """
 import os
-from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
 import boto3
-from botocore.exceptions import ClientError
+from boto3.dynamodb.conditions import Key
 from aws_lambda_powertools import Logger
 
 logger = Logger()
@@ -15,80 +16,133 @@ class DynamoDBService:
     """Service for DynamoDB operations"""
     
     def __init__(self):
-        # Check if we're using DynamoDB Local
         dynamodb_endpoint = os.environ.get('DYNAMODB_ENDPOINT')
+        region = os.environ.get('AWS_REGION', 'us-east-1')
         
         if dynamodb_endpoint:
             # Local development
             self.dynamodb = boto3.resource(
                 'dynamodb',
                 endpoint_url=dynamodb_endpoint,
-                region_name='us-east-1',
-                aws_access_key_id='local',
-                aws_secret_access_key='local'
+                region_name=region
             )
         else:
             # Production
-            self.dynamodb = boto3.resource('dynamodb')
+            self.dynamodb = boto3.resource('dynamodb', region_name=region)
         
-        self.users_table_name = os.environ.get('DYNAMODB_TABLE_USERS', 'multimusic-users')
-        self.tokens_table_name = os.environ.get('DYNAMODB_TABLE_TOKENS', 'multimusic-tokens')
-        
-        self.users_table = self.dynamodb.Table(self.users_table_name)
-        self.tokens_table = self.dynamodb.Table(self.tokens_table_name)
+        self.table_name = os.environ.get('DYNAMODB_TABLE', 'multimusic-users')
+        self.table = self.dynamodb.Table(self.table_name)
     
-    def store_user(self, user_id: str, email: str, display_name: str = '') -> None:
-        """
-        Store user profile
-        
-        Args:
-            user_id: Unique user identifier
-            email: User email
-            display_name: User display name
-        """
+    # ========== Generic Operations ==========
+    
+    def put_item(self, item: Dict[str, Any]) -> None:
+        """Put item in DynamoDB"""
         try:
-            timestamp = int(datetime.utcnow().timestamp())
-            
-            self.users_table.put_item(
-                Item={
-                    'userId': user_id,
-                    'sk': 'PROFILE',
-                    'email': email,
-                    'displayName': display_name,
-                    'createdAt': timestamp,
-                    'updatedAt': timestamp
-                }
-            )
-            
-            logger.info(f"Stored user profile: {user_id}")
-            
-        except ClientError as e:
-            logger.error(f"Error storing user: {str(e)}")
+            self.table.put_item(Item=item)
+            logger.info(f"Put item: userId={item.get('userId')}, sk={item.get('sk')}")
+        except Exception as e:
+            logger.error(f"Error putting item: {str(e)}")
             raise
     
-    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get user profile
-        
-        Args:
-            user_id: User identifier
+    def get_item(self, user_id: str, sk: str) -> Optional[Dict[str, Any]]:
+        """Get item from DynamoDB"""
+        try:
+            response = self.table.get_item(
+                Key={'userId': user_id, 'sk': sk}
+            )
+            return response.get('Item')
+        except Exception as e:
+            logger.error(f"Error getting item: {str(e)}")
+            raise
+    
+    def delete_item(self, user_id: str, sk: str) -> None:
+        """Delete item from DynamoDB"""
+        try:
+            self.table.delete_item(
+                Key={'userId': user_id, 'sk': sk}
+            )
+            logger.info(f"Deleted item: userId={user_id}, sk={sk}")
+        except Exception as e:
+            logger.error(f"Error deleting item: {str(e)}")
+            raise
+    
+    def query_by_prefix(self, user_id: str, sk_prefix: str) -> List[Dict[str, Any]]:
+        """Query items by SK prefix"""
+        try:
+            response = self.table.query(
+                KeyConditionExpression=Key('userId').eq(user_id) & Key('sk').begins_with(sk_prefix)
+            )
+            return response.get('Items', [])
+        except Exception as e:
+            logger.error(f"Error querying by prefix: {str(e)}")
+            raise
+    
+    def update_item(self, user_id: str, sk: str, updates: Dict[str, Any]) -> None:
+        """Update item attributes"""
+        try:
+            # Build update expression
+            update_expr = "SET "
+            expr_attr_values = {}
+            expr_attr_names = {}
             
-        Returns:
-            User data or None if not found
+            for i, (key, value) in enumerate(updates.items()):
+                attr_name = f"#attr{i}"
+                attr_value = f":val{i}"
+                update_expr += f"{attr_name} = {attr_value}, "
+                expr_attr_names[attr_name] = key
+                expr_attr_values[attr_value] = value
+            
+            update_expr = update_expr.rstrip(', ')
+            
+            self.table.update_item(
+                Key={'userId': user_id, 'sk': sk},
+                UpdateExpression=update_expr,
+                ExpressionAttributeNames=expr_attr_names,
+                ExpressionAttributeValues=expr_attr_values
+            )
+            logger.info(f"Updated item: userId={user_id}, sk={sk}")
+        except Exception as e:
+            logger.error(f"Error updating item: {str(e)}")
+            raise
+    
+    # ========== User Operations ==========
+    
+    def get_user_by_provider(self, provider: str, provider_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Find user by auth provider ID
+        Uses GSI or scan (implement GSI in production)
         """
         try:
-            response = self.users_table.get_item(
-                Key={
-                    'userId': user_id,
-                    'sk': 'PROFILE'
+            # For now, scan table (inefficient - use GSI in production)
+            response = self.table.scan(
+                FilterExpression='sk = :sk AND providerId = :pid',
+                ExpressionAttributeValues={
+                    ':sk': f'auth#{provider}',
+                    ':pid': provider_id
                 }
             )
             
-            return response.get('Item')
+            items = response.get('Items', [])
+            return items[0] if items else None
             
-        except ClientError as e:
-            logger.error(f"Error getting user: {str(e)}")
-            return None
+        except Exception as e:
+            logger.error(f"Error finding user by provider: {str(e)}")
+            raise
+    
+    # ========== Legacy Methods (for backward compatibility) ==========
+    
+    def store_user(self, user_id: str, email: str, display_name: str) -> None:
+        """Legacy method - creates basic user profile"""
+        timestamp = datetime.utcnow().isoformat()
+        
+        self.put_item({
+            'userId': user_id,
+            'sk': 'PROFILE',
+            'email': email,
+            'displayName': display_name,
+            'createdAt': timestamp,
+            'updatedAt': timestamp
+        })
     
     def store_token(
         self,
@@ -99,67 +153,24 @@ class DynamoDBService:
         expires_in: int,
         scope: str = ''
     ) -> None:
-        """
-        Store OAuth tokens
+        """Legacy method - stores platform tokens"""
+        timestamp = datetime.utcnow().isoformat()
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
         
-        Args:
-            user_id: User identifier
-            platform: Platform name (spotify, soundcloud, etc.)
-            access_token: Encrypted access token
-            refresh_token: Encrypted refresh token
-            expires_in: Token expiration time in seconds
-            scope: OAuth scope
-        """
-        try:
-            timestamp = int(datetime.utcnow().timestamp())
-            expires_at = timestamp + expires_in
-            ttl = timestamp + (30 * 24 * 60 * 60)  # 30 days TTL
-            
-            self.tokens_table.put_item(
-                Item={
-                    'userId': user_id,
-                    'sk': f'platform#{platform}',
-                    'platform': platform,
-                    'accessToken': access_token,
-                    'refreshToken': refresh_token,
-                    'expiresAt': expires_at,
-                    'scope': scope,
-                    'createdAt': timestamp,
-                    'updatedAt': timestamp,
-                    'ttl': ttl
-                }
-            )
-            
-            logger.info(f"Stored tokens for user {user_id} on {platform}")
-            
-        except ClientError as e:
-            logger.error(f"Error storing tokens: {str(e)}")
-            raise
+        self.put_item({
+            'userId': user_id,
+            'sk': f'platform#{platform}',
+            'accessToken': access_token,
+            'refreshToken': refresh_token,
+            'expiresAt': expires_at,
+            'expiresIn': expires_in,
+            'scope': scope,
+            'updatedAt': timestamp
+        })
     
     def get_token(self, user_id: str, platform: str) -> Optional[Dict[str, Any]]:
-        """
-        Get OAuth tokens for a platform
-        
-        Args:
-            user_id: User identifier
-            platform: Platform name
-            
-        Returns:
-            Token data or None if not found
-        """
-        try:
-            response = self.tokens_table.get_item(
-                Key={
-                    'userId': user_id,
-                    'sk': f'platform#{platform}'
-                }
-            )
-            
-            return response.get('Item')
-            
-        except ClientError as e:
-            logger.error(f"Error getting tokens: {str(e)}")
-            return None
+        """Legacy method - gets platform tokens"""
+        return self.get_item(user_id=user_id, sk=f'platform#{platform}')
     
     def update_access_token(
         self,
@@ -168,56 +179,16 @@ class DynamoDBService:
         access_token: str,
         expires_in: int
     ) -> None:
-        """
-        Update access token after refresh
+        """Legacy method - updates access token"""
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
         
-        Args:
-            user_id: User identifier
-            platform: Platform name
-            access_token: New encrypted access token
-            expires_in: Token expiration time in seconds
-        """
-        try:
-            timestamp = int(datetime.utcnow().timestamp())
-            expires_at = timestamp + expires_in
-            
-            self.tokens_table.update_item(
-                Key={
-                    'userId': user_id,
-                    'sk': f'platform#{platform}'
-                },
-                UpdateExpression='SET accessToken = :token, expiresAt = :exp, updatedAt = :updated',
-                ExpressionAttributeValues={
-                    ':token': access_token,
-                    ':exp': expires_at,
-                    ':updated': timestamp
-                }
-            )
-            
-            logger.info(f"Updated access token for user {user_id} on {platform}")
-            
-        except ClientError as e:
-            logger.error(f"Error updating access token: {str(e)}")
-            raise
-    
-    def delete_token(self, user_id: str, platform: str) -> None:
-        """
-        Delete OAuth tokens for a platform
-        
-        Args:
-            user_id: User identifier
-            platform: Platform name
-        """
-        try:
-            self.tokens_table.delete_item(
-                Key={
-                    'userId': user_id,
-                    'sk': f'platform#{platform}'
-                }
-            )
-            
-            logger.info(f"Deleted tokens for user {user_id} on {platform}")
-            
-        except ClientError as e:
-            logger.error(f"Error deleting tokens: {str(e)}")
-            raise
+        self.update_item(
+            user_id=user_id,
+            sk=f'platform#{platform}',
+            updates={
+                'accessToken': access_token,
+                'expiresAt': expires_at,
+                'expiresIn': expires_in,
+                'updatedAt': datetime.utcnow().isoformat()
+            }
+        )
