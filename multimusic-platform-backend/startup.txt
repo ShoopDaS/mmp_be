@@ -1,0 +1,13 @@
+prep
+go to mmp_be/multimusic-platform-backend/
+source venv/bin/activate #or wherever the virtual env is
+go to mmp_be/multimusic-platform-backend/local
+docker-compose up -d
+go to mmp_be/multimusic-platform-backend/scripts
+python create_tables.py
+
+
+to run the app: (use venv)
+go to mmp_be/multimusic-platform-backend/
+python main.py
+start frontend
