@@ -1,19 +1,17 @@
 """
-Spotify OAuth Lambda Handlers
+Spotify Platform Connection Handlers
 """
 import json
 import os
 import secrets
 from typing import Any, Dict
-from urllib.parse import urlencode, parse_qs
+from urllib.parse import urlencode
 import httpx
 
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from src.services.token_service import TokenService
-from src.services.dynamodb_service import DynamoDBService
-from src.services.jwt_service import JWTService
+from src.handlers.platforms.base import BasePlatformHandler
 from src.utils.responses import success_response, error_response, redirect_response
 
 logger = Logger()
@@ -24,30 +22,29 @@ SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET')
 SPOTIFY_REDIRECT_URI = os.environ.get('SPOTIFY_REDIRECT_URI')
 FRONTEND_URL = os.environ.get('FRONTEND_URL')
 
-# Services
-token_service = TokenService()
-db_service = DynamoDBService()
-jwt_service = JWTService()
+# Handler instance
+platform_handler = BasePlatformHandler('spotify')
 
-
-# After all the imports and configuration section
-SPOTIFY_CLIENT_ID = os.environ.get('SPOTIFY_CLIENT_ID')
-SPOTIFY_CLIENT_SECRET = os.environ.get('SPOTIFY_CLIENT_SECRET')
-SPOTIFY_REDIRECT_URI = os.environ.get('SPOTIFY_REDIRECT_URI')
-FRONTEND_URL = os.environ.get('FRONTEND_URL')
 
 @logger.inject_lambda_context
-def login_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
+def connect_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
     """
-    Initiate Spotify OAuth login
+    Initiate Spotify connection for logged-in user
     
-    Returns authorization URL to redirect user to Spotify
+    Requires valid session token in Authorization header
     """
     try:
-        logger.info("Initiating Spotify OAuth login")
+        logger.info("Initiating Spotify platform connection")
         
-        # Generate state for CSRF protection
-        state = secrets.token_urlsafe(32)
+        # Verify user is authenticated
+        user_id = platform_handler.get_user_from_session(event)
+        if not user_id:
+            return error_response("Authentication required", 401)
+        
+        logger.info(f"User {user_id} connecting Spotify")
+        
+        # Generate state for CSRF protection (include user_id)
+        state = f"{user_id}:{secrets.token_urlsafe(32)}"
         
         # Build Spotify authorization URL
         auth_params = {
@@ -72,7 +69,7 @@ def login_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, An
         })
         
     except Exception as e:
-        logger.exception("Error in Spotify login")
+        logger.exception("Error in Spotify connect")
         return error_response(str(e), 500)
 
 
@@ -81,7 +78,7 @@ def callback_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str,
     """
     Handle Spotify OAuth callback
     
-    Exchange authorization code for access token and store in DynamoDB
+    Links Spotify account to authenticated MultiMusic user
     """
     try:
         logger.info("Processing Spotify OAuth callback")
@@ -95,14 +92,24 @@ def callback_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str,
         if error:
             logger.error(f"OAuth error: {error}")
             return redirect_response(
-                f"{FRONTEND_URL}?error={error}",
+                f"{FRONTEND_URL}/dashboard?error={error}",
                 302
             )
         
-        if not code:
-            logger.error("No authorization code provided")
+        if not code or not state:
+            logger.error("Missing code or state")
             return redirect_response(
-                f"{FRONTEND_URL}?error=no_code",
+                f"{FRONTEND_URL}/dashboard?error=invalid_callback",
+                302
+            )
+        
+        # Extract user ID from state
+        try:
+            user_id, _ = state.split(':', 1)
+        except ValueError:
+            logger.error("Invalid state format")
+            return redirect_response(
+                f"{FRONTEND_URL}/dashboard?error=invalid_state",
                 302
             )
         
@@ -110,44 +117,31 @@ def callback_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str,
         logger.info("Exchanging code for access token")
         token_data = exchange_code_for_token(code)
         
-        # Get user info from Spotify
-        user_info = get_spotify_user_info(token_data['access_token'])
-        user_id = user_info['id']
+        # Get Spotify user info
+        spotify_user_info = get_spotify_user_info(token_data['access_token'])
+        spotify_user_id = spotify_user_info['id']
         
-        logger.info(f"User authenticated: {user_id}")
+        logger.info(f"Linking Spotify user {spotify_user_id} to {user_id}")
         
-        # Store tokens in DynamoDB
-        encrypted_access_token = token_service.encrypt_token(token_data['access_token'])
-        encrypted_refresh_token = token_service.encrypt_token(token_data['refresh_token'])
-        
-        db_service.store_token(
+        # Store platform tokens
+        platform_handler.store_platform_tokens(
             user_id=user_id,
-            platform='spotify',
-            access_token=encrypted_access_token,
-            refresh_token=encrypted_refresh_token,
+            platform_user_id=spotify_user_id,
+            access_token=token_data['access_token'],
+            refresh_token=token_data['refresh_token'],
             expires_in=token_data['expires_in'],
             scope=token_data.get('scope', '')
         )
         
-        # Store user profile
-        db_service.store_user(
-            user_id=user_id,
-            email=user_info.get('email', ''),
-            display_name=user_info.get('display_name', '')
-        )
-        
-        # Generate JWT session token
-        session_token = jwt_service.create_token(user_id)
-        
-        # Redirect to frontend with session token
-        redirect_url = f"{FRONTEND_URL}?session={session_token}"
+        # Redirect to dashboard with success
+        redirect_url = f"{FRONTEND_URL}/dashboard?spotify=connected"
         
         return redirect_response(redirect_url, 302)
         
     except Exception as e:
         logger.exception("Error in Spotify callback")
         return redirect_response(
-            f"{FRONTEND_URL}?error=callback_failed",
+            f"{FRONTEND_URL}/dashboard?error=connection_failed",
             302
         )
 
@@ -157,53 +151,33 @@ def refresh_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, 
     """
     Refresh Spotify access token
     
-    Uses refresh token to get new access token
+    Requires valid session token
     """
     try:
         logger.info("Refreshing Spotify access token")
         
-        # Parse request body
-        body = json.loads(event.get('body', '{}'))
-        session_token = body.get('sessionToken')
-
-        if not session_token:
-            # Try to get from Authorization header
-            headers = event.get('headers', {})
-
-            # Try both cases
-            auth_header = headers.get('Authorization') or headers.get('authorization') or ''
-            
-            if auth_header and auth_header.startswith('Bearer '):
-                session_token = auth_header[7:]
-        
-        if not session_token:
-            return error_response("No session token provided", 401)
-        
-        # Verify JWT and get user ID
-        user_id = jwt_service.verify_token(session_token)
+        # Verify user is authenticated
+        user_id = platform_handler.get_user_from_session(event)
         if not user_id:
-            return error_response("Invalid session token", 401)
+            return error_response("Authentication required", 401)
         
-        logger.info(f"Refreshing token for user: {user_id}")
+        logger.info(f"Refreshing Spotify token for user: {user_id}")
         
         # Get refresh token from DynamoDB
-        token_data = db_service.get_token(user_id, 'spotify')
+        token_data = platform_handler.get_platform_tokens(user_id)
         if not token_data:
-            return error_response("No Spotify account connected", 404)
+            return error_response("Spotify not connected", 404)
         
         encrypted_refresh_token = token_data['refreshToken']
-        refresh_token = token_service.decrypt_token(encrypted_refresh_token)
+        refresh_token = platform_handler.token_service.decrypt_token(encrypted_refresh_token)
         
         # Request new access token from Spotify
         new_token_data = refresh_access_token(refresh_token)
         
-        # Store new access token
-        encrypted_new_token = token_service.encrypt_token(new_token_data['access_token'])
-        
-        db_service.update_access_token(
+        # Update stored access token
+        platform_handler.update_access_token(
             user_id=user_id,
-            platform='spotify',
-            access_token=encrypted_new_token,
+            access_token=new_token_data['access_token'],
             expires_in=new_token_data['expires_in']
         )
         
