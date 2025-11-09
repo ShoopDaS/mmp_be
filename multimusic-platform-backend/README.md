@@ -1,243 +1,350 @@
-# MultiMusic Platform - Backend
+# MultiMusic Platform - Backend (v2.0)
 
-Backend services for the MultiMusic Platform, handling OAuth authentication flows and token management for multiple streaming services.
+Backend services for the MultiMusic Platform, handling multi-provider SSO authentication and music platform connections.
 
 ## Overview
 
-The backend is intentionally minimal, consisting of serverless Lambda functions that handle OAuth callbacks and token refresh operations. The architecture keeps API requests client-side to avoid rate limiting and improve performance.
+The backend implements a **multi-provider Single Sign-On (SSO)** architecture that separates user authentication from music platform connections. Users log in once with their preferred SSO provider (Google, Microsoft, GitHub) and then connect various music platforms (Spotify, SoundCloud, etc.) to their account.
 
-## Architecture
+## Architecture Evolution
 
+### v1.0 (Previous)
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    CloudFront + WAF                     │
-│                 (Public Internet)                       │
-└────────────────────────┬────────────────────────────────┘
-                         │ HTTPS (Only entry point)
-                         ▼
-                  ┌──────────────┐
-                  │ VPC Endpoint │
-                  │ (API Gateway)│
-                  └──────┬───────┘
-                         │
-        ┌────────────────┴────────────────┐
-        │            VPC                  │
-        │  Private Subnets (No Internet)  │
-        │                                 │
-        │  ┌──────────────┐               │
-        │  │ API Gateway  │               │
-        │  │  (Private)   │               │
-        │  └──────┬───────┘               │
-        │         │                       │
-        │         ▼                       │
-        │  ┌──────────────┐               │
-        │  │   Lambda     │───────NAT─────┼──▶ Spotify API
-        │  │  Functions   │    Gateway    │    SoundCloud API
-        │  └──────┬───────┘               │
-        │         │                       │
-        │         ▼                       │
-        │  VPC Endpoints (Private):      │
-        │  ┌──────────────┐              │
-        │  │  DynamoDB    │              │
-        │  │  Secrets Mgr │              │
-        │  │  CloudWatch  │              │
-        │  └──────────────┘              │
-        └─────────────────────────────────┘
-
-Frontend (Browser)
-      │
-      │ Direct API calls with user token
-      ▼
-┌─────────────┐
-│   Spotify   │
-│ SoundCloud  │
-│     APIs    │
-└─────────────┘
+User → Spotify OAuth → Logged in as Spotify User
+       (User ID = Spotify ID)
 ```
 
-**Key Principle**: The backend only handles authentication. All music-related API calls (search, playback, playlists) go directly from the frontend to the streaming service APIs using the user's access token.
+### v2.0 (Current)
+```
+User → SSO Login (Google/Microsoft/GitHub)
+       ↓
+    Internal User Account (mmp_<uuid>)
+       ↓
+    Connect Music Platforms
+       ↓
+    Spotify, SoundCloud, etc. linked to account
+```
 
-**Security Model**: Private API Gateway accessible ONLY through CloudFront + WAF. Network-level isolation ensures no direct internet access to API Gateway.
-
-## Why This Approach?
-
-- **No rate limiting issues**: Each user uses their own API quota
-- **Better performance**: No backend proxy bottleneck
-- **Lower costs**: Minimal Lambda invocations (only for OAuth)
-- **Scalability**: Frontend scales infinitely via CDN
-- **Security**: Private API Gateway + CloudFront + WAF provides enterprise-grade protection
-- **Network Isolation**: API Gateway physically inaccessible from internet, only accessible through VPC endpoint
+**Key Benefits:**
+- ✅ Multiple SSO providers supported
+- ✅ One account, multiple login methods
+- ✅ Music platforms as connections, not identity
+- ✅ Easy to add new SSO providers or music services
+- ✅ Scalable architecture for enterprise use
 
 ## Tech Stack
 
-## Tech Stack
-
-**Primary Stack:**
-- Python 3.13
-- FastAPI (for local development)
-- AWS Lambda (Python runtime)
-- API Gateway (Private - VPC endpoint only)
-- CloudFront + WAF (DDoS protection, rate limiting)
-- VPC (Private subnets, NAT Gateway)
-- DynamoDB (token storage via VPC endpoint)
-- AWS Secrets Manager (OAuth secrets via VPC endpoint)
-- Boto3 (AWS SDK)
-
-**Infrastructure:**
-- VPC with private subnets (10.0.0.0/16)
-- NAT Gateway (for Lambda to call external OAuth APIs)
-- VPC Endpoints:
-  - API Gateway (Interface endpoint)
-  - DynamoDB (Gateway endpoint - free)
-  - Secrets Manager (Interface endpoint)
-  - CloudWatch Logs (Interface endpoint)
-- CloudFront Distribution (single entry point)
-- AWS WAF Web ACL (DDoS, rate limiting, bot protection)
+- **Python 3.13** - Latest Python with enhanced performance
+- **FastAPI** - Modern async web framework for local development
+- **AWS Lambda** - Serverless compute for production
+- **DynamoDB** - NoSQL database for token storage
+- **JWT** - Stateless session management
+- **Cryptography** - Token encryption at rest
+- **httpx** - Modern async HTTP client for OAuth calls
 
 ## API Endpoints
 
-### Spotify Authentication
+### SSO Authentication (Login to MultiMusic)
 
-**POST /auth/spotify/login**
-- Initiates Spotify OAuth flow
-- Returns authorization URL
-- No authentication required
+#### POST /auth/google/login
+Initiates Google OAuth flow
+- **Authentication**: None required
+- **Returns**: Authorization URL with CSRF state
+- **Response**:
+```json
+{
+  "data": {
+    "authUrl": "https://accounts.google.com/o/oauth2/v2/auth?...",
+    "state": "csrf_token_here"
+  }
+}
+```
 
-**GET /auth/spotify/callback**
-- Handles OAuth callback from Spotify
-- Exchanges authorization code for access/refresh tokens
-- Stores tokens in DynamoDB
-- Redirects to frontend with session token
+#### GET /auth/google/callback
+Handles OAuth callback from Google
+- **Authentication**: None (single-use code in query params)
+- **Creates**: Internal user account (mmp_<uuid>)
+- **Links**: Google account to user
+- **Generates**: JWT session token
+- **Redirects**: To frontend with session token
 
-**POST /auth/spotify/refresh**
-- Refreshes expired access token
-- Requires session token
-- Returns new access token
+#### Future SSO Providers
+- POST /auth/microsoft/login
+- GET /auth/microsoft/callback
+- POST /auth/github/login
+- GET /auth/github/callback
 
-### SoundCloud Authentication (Coming Soon)
+### Music Platform Connections
 
-**POST /auth/soundcloud/login**
-**GET /auth/soundcloud/callback**
-**POST /auth/soundcloud/refresh**
+#### POST /platforms/spotify/connect
+Initiates Spotify connection for authenticated user
+- **Authentication**: Required (Bearer token)
+- **Returns**: Spotify authorization URL
+- **Response**:
+```json
+{
+  "data": {
+    "authUrl": "https://accounts.spotify.com/authorize?...",
+    "state": "user_id:csrf_token"
+  }
+}
+```
+
+#### GET /platforms/spotify/callback
+Handles Spotify OAuth callback
+- **Authentication**: None (state contains user_id)
+- **Links**: Spotify account to user's MultiMusic account
+- **Stores**: Encrypted access/refresh tokens
+- **Redirects**: To dashboard with success message
+
+#### POST /platforms/spotify/refresh
+Refreshes expired Spotify access token
+- **Authentication**: Required (Bearer token)
+- **Returns**: New access token for client-side API calls
+- **Response**:
+```json
+{
+  "data": {
+    "accessToken": "BQC...",
+    "expiresIn": 3600
+  }
+}
+```
+
+#### Future Platform Connections
+- POST /platforms/soundcloud/connect
+- GET /platforms/soundcloud/callback
+- POST /platforms/soundcloud/refresh
+
+### User Management
+
+#### GET /user/profile
+Returns user profile information
+- **Authentication**: Required
+- **Response**:
+```json
+{
+  "data": {
+    "userId": "mmp_abc123",
+    "email": "user@gmail.com",
+    "displayName": "John Doe",
+    "primaryAuthProvider": "google"
+  }
+}
+```
+
+#### GET /user/auth-providers
+Lists linked SSO providers
+- **Authentication**: Required
+- **Response**:
+```json
+{
+  "data": {
+    "providers": [
+      {
+        "provider": "google",
+        "email": "user@gmail.com",
+        "linked": true,
+        "linkedAt": "2024-01-01T00:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+#### GET /user/platforms
+Lists connected music platforms
+- **Authentication**: Required
+- **Response**:
+```json
+{
+  "data": {
+    "platforms": [
+      {
+        "platform": "spotify",
+        "platformUserId": "spotify_user_123",
+        "connected": true,
+        "connectedAt": "2024-01-01T00:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+#### DELETE /user/platforms/{platform}
+Disconnects a music platform
+- **Authentication**: Required
+- **Response**:
+```json
+{
+  "data": {
+    "message": "spotify disconnected successfully"
+  }
+}
+```
 
 ## Database Schema
 
-### Users Table (DynamoDB)
+### Single Table Design (multimusic-users)
 
+DynamoDB table with composite key (userId, sk):
+
+**User Profile:**
+```python
+{
+    'userId': 'mmp_abc123def456',    # PK: Internal user ID
+    'sk': 'PROFILE',                  # SK: Record type
+    'email': 'user@gmail.com',
+    'displayName': 'John Doe',
+    'avatarUrl': 'https://...',
+    'primaryAuthProvider': 'google',
+    'createdAt': '2024-01-01T00:00:00Z',
+    'updatedAt': '2024-01-01T00:00:00Z'
+}
 ```
-PK: userId (String)
-SK: platform#platformName (String)
----
-accessToken: String (encrypted)
-refreshToken: String (encrypted)
-expiresAt: Number (timestamp)
-createdAt: Number (timestamp)
-updatedAt: Number (timestamp)
+
+**SSO Provider Links:**
+```python
+{
+    'userId': 'mmp_abc123def456',
+    'sk': 'auth#google',             # SK: auth#{provider}
+    'providerId': 'google_123456',   # Provider's user ID
+    'email': 'user@gmail.com',
+    'linked': True,
+    'linkedAt': '2024-01-01T00:00:00Z'
+}
+```
+
+**Music Platform Connections:**
+```python
+{
+    'userId': 'mmp_abc123def456',
+    'sk': 'platform#spotify',        # SK: platform#{service}
+    'platformUserId': 'spotify_user_123',
+    'accessToken': '<encrypted>',     # AES-256 encrypted
+    'refreshToken': '<encrypted>',    # AES-256 encrypted
+    'expiresAt': '2024-01-01T01:00:00Z',
+    'expiresIn': 3600,
+    'scope': 'user-read-private streaming...',
+    'connectedAt': '2024-01-01T00:00:00Z'
+}
 ```
 
 ## Environment Variables
 
 ```bash
-# Spotify
-SPOTIFY_CLIENT_ID=<your-client-id>
-SPOTIFY_CLIENT_SECRET=<your-client-secret>
-SPOTIFY_REDIRECT_URI=<your-api-gateway-url>/auth/spotify/callback
-
-# SoundCloud
-SOUNDCLOUD_CLIENT_ID=<your-client-id>
-SOUNDCLOUD_CLIENT_SECRET=<your-client-secret>
-SOUNDCLOUD_REDIRECT_URI=<your-api-gateway-url>/auth/soundcloud/callback
+# JWT & Encryption
+JWT_SECRET=your-super-secret-jwt-key-change-in-production
+JWT_ALGORITHM=HS256
+JWT_EXPIRATION_DAYS=7
+ENCRYPTION_KEY=your-32-char-encryption-key-must-be-exactly-32-chars
 
 # Database
-DYNAMODB_TABLE_NAME=multimusic-tokens
-DYNAMODB_REGION=us-east-1
+DYNAMODB_ENDPOINT=http://127.0.0.1:8000  # Local dev
+DYNAMODB_TABLE=multimusic-users
+AWS_REGION=us-east-1
 
 # Frontend
-FRONTEND_URL=https://your-frontend-url.com
+FRONTEND_URL=http://127.0.0.1:3000
 
-# Security
-JWT_SECRET=<your-jwt-secret>
-ENCRYPTION_KEY=<your-encryption-key>
+# Google OAuth
+GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-xxxxx
+GOOGLE_REDIRECT_URI=http://127.0.0.1:8080/auth/google/callback
+
+# Spotify (Platform Connection)
+SPOTIFY_CLIENT_ID=xxxxx
+SPOTIFY_CLIENT_SECRET=xxxxx
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:8080/platforms/spotify/callback
 ```
 
-## Setup Instructions
+## Local Development Setup
 
 ### Prerequisites
-
-- AWS Account
 - Python 3.13+
-- AWS CLI configured
-- pip and virtualenv
+- Docker & Docker Compose
+- Google Cloud Console account
+- Spotify Developer account
 
-### Local Development
+### Step-by-Step Setup
 
+1. **Clone and setup environment**
 ```bash
-# Clone the repository
-git clone <your-repo-url>
+git clone <your-repo>
 cd multimusic-platform-backend
 
-# Create virtual environment
 python3.13 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your credentials
-
-# Run locally with FastAPI
-uvicorn main:app --reload --port 8000
+pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-### Deployment
-
-**Using Terraform (Recommended for this project)**
-
-The infrastructure will be written in Terraform, including:
-- VPC with private subnets and NAT Gateway
-- VPC Endpoints (API Gateway, DynamoDB, Secrets Manager, CloudWatch)
-- Private API Gateway with resource policy
-- Lambda functions with VPC configuration
-- CloudFront distribution with WAF
-- DynamoDB tables
-- IAM roles and policies
-- Security groups
-
+2. **Configure environment**
 ```bash
-# Initialize Terraform
-terraform init
-
-# Plan deployment
-terraform plan -out=tfplan
-
-# Apply infrastructure
-terraform apply tfplan
-
-# Destroy (when needed)
-terraform destroy
+cp .env.template .env
+# Edit .env with your OAuth credentials
 ```
 
-**Alternative: AWS SAM**
+3. **Start DynamoDB Local**
 ```bash
-# Install SAM CLI
-pip install aws-sam-cli
-
-# Build
-sam build
-
-# Deploy
-sam deploy --guided
+cd local
+docker-compose up -d
+cd ..
 ```
 
-**Alternative: AWS CDK (Python)**
+4. **Create database tables**
 ```bash
-# Install CDK
-pip install aws-cdk-lib
+python scripts/create_tables.py
+```
 
-# Deploy
-cdk deploy
+5. **Start backend server**
+```bash
+python main.py
+```
+
+Backend runs at `http://127.0.0.1:8080`
+
+### OAuth Provider Setup
+
+#### Google OAuth
+1. [Google Cloud Console](https://console.cloud.google.com)
+2. Create project → Enable Google+ API
+3. Credentials → OAuth 2.0 Client ID
+4. Authorized redirect: `http://127.0.0.1:8080/auth/google/callback`
+5. Copy credentials to `.env`
+
+#### Spotify OAuth
+1. [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+2. Create/edit app
+3. **Important**: Redirect URI is now `/platforms/spotify/callback`
+4. Add: `http://127.0.0.1:8080/platforms/spotify/callback`
+5. Scopes needed:
+   - `user-read-private`
+   - `user-read-email`
+   - `streaming`
+   - `user-modify-playback-state`
+   - `user-read-playback-state`
+6. Copy credentials to `.env`
+
+## Migration from v1.0
+
+If you have existing Spotify-only users:
+
+### Option 1: Fresh Start (Development)
+```bash
+aws dynamodb delete-table \
+  --table-name multimusic-users \
+  --endpoint-url http://127.0.0.1:8000
+
+python scripts/create_tables.py
+```
+
+### Option 2: Inspect and Clean
+```bash
+# Check for old records
+python scripts/inspect_dynamodb.py
+
+# Will show old (spotify_xxx) vs new (mmp_xxx) users
 ```
 
 ## Project Structure
@@ -246,191 +353,164 @@ cdk deploy
 backend/
 ├── src/
 │   ├── handlers/
-│   │   ├── spotify.py          # Spotify OAuth handlers
-│   │   ├── soundcloud.py       # SoundCloud OAuth handlers
-│   │   └── token.py            # Token refresh handlers
+│   │   ├── auth/
+│   │   │   ├── base.py          # BaseAuthHandler (SSO logic)
+│   │   │   ├── google.py        # Google OAuth implementation
+│   │   │   └── __init__.py
+│   │   ├── platforms/
+│   │   │   ├── base.py          # BasePlatformHandler (platform logic)
+│   │   │   ├── spotify.py       # Spotify connection implementation
+│   │   │   └── __init__.py
+│   │   └── user.py              # User management endpoints
 │   ├── services/
-│   │   ├── oauth.py            # OAuth helper functions
-│   │   ├── encryption.py       # Token encryption
-│   │   └── dynamodb.py         # Database operations
-│   ├── middleware/
-│   │   ├── auth.py             # JWT verification
-│   │   └── cors.py             # CORS configuration
+│   │   ├── dynamodb_service.py  # Database operations
+│   │   ├── jwt_service.py       # JWT token management
+│   │   └── token_service.py     # Token encryption/decryption
 │   └── utils/
-│       ├── logger.py           # Logging utility
-│       └── errors.py           # Error handling
-├── tests/
-│   ├── unit/
-│   └── integration/
-├── terraform/                  # Terraform infrastructure code
-│   ├── main.tf
-│   ├── vpc.tf
-│   ├── api_gateway.tf
-│   ├── lambda.tf
-│   ├── cloudfront.tf
-│   ├── waf.tf
-│   ├── dynamodb.tf
-│   ├── variables.tf
-│   └── outputs.tf
-├── requirements.txt            # Python dependencies
-├── template.yaml              # SAM template (optional)
-├── serverless.yml             # Serverless config (optional)
-├── .env.example
-└── README.md
+│       └── responses.py         # Lambda response helpers
+├── scripts/
+│   ├── create_tables.py         # Database setup
+│   └── inspect_dynamodb.py      # Database inspection
+├── local/
+│   ├── docker-compose.yml       # DynamoDB Local + Admin UI
+│   └── app.py                   # Legacy local wrapper
+├── main.py                      # FastAPI application
+├── requirements.txt             # Production dependencies
+├── requirements-dev.txt         # Development dependencies
+├── .env.template               # Environment template
+└── README.md                    # This file
 ```
 
-## Security Considerations
+## User Flows
 
-### Network Security
-- **Private API Gateway**: Only accessible via VPC endpoint, no public internet access
-- **CloudFront as sole entry point**: All traffic must go through CloudFront + WAF
-- **VPC isolation**: Lambda functions in private subnets with no direct internet access
-- **NAT Gateway**: Controlled outbound access for OAuth API calls only
+### New User Registration
+```
+1. User → Frontend landing page
+2. Click "Continue with Google"
+3. Backend → Google OAuth
+4. Google → User authenticates
+5. Backend → Creates mmp_<uuid> account
+6. Backend → Links Google account
+7. Backend → Generates JWT session
+8. Frontend → Dashboard (logged in)
+9. User → "Connect Spotify"
+10. Backend → Spotify OAuth
+11. Spotify → User authorizes
+12. Backend → Links Spotify to account
+13. Frontend → Search & play music!
+```
 
-### Application Security
-- All tokens encrypted at rest using AWS KMS
-- Refresh tokens stored in DynamoDB with TTL
-- Access tokens never logged
-- JWT tokens for session management
-- OAuth secrets stored in AWS Secrets Manager
-- Never commit secrets to version control
-- Rotate secrets regularly
+### Returning User
+```
+1. User → Frontend
+2. Frontend → Detects session token
+3. Frontend → Auto-redirects to dashboard
+4. User → Already has platforms connected
+5. User → Can immediately search music
+```
 
-### WAF Protection
-- **Rate Limiting**: 100 requests per 5 minutes per IP
-- **AWS Managed Rules**:
-  - Core Rule Set (OWASP Top 10)
-  - Known Bad Inputs
-  - IP Reputation Lists
-- **DDoS Protection**: Automatic mitigation via CloudFront + WAF
-- **Bot Detection**: AWS Managed Bot Control
+## Security
+
+### Authentication
+- JWT tokens with configurable expiration
+- CSRF protection via state parameter
+- Secure token storage in localStorage
+- Session invalidation on logout
+
+### Token Storage
+- Access/refresh tokens encrypted at rest (AES-256)
+- Tokens only decrypted when needed
+- Separate encryption keys per environment
+- No tokens in logs or error messages
 
 ### API Security
 - CORS restricted to frontend domain
-- Rate limiting per user/IP
-- HTTPS only in production
-- Request validation at API Gateway
-- Lambda function isolation via IAM roles
+- Bearer token authentication
+- Request validation
+- Rate limiting (production)
 
-## Rate Limiting
+## Testing
 
-Lambda functions have minimal rate limiting since they only handle OAuth flows:
-- Login endpoint: 10 requests/minute per IP
-- Callback endpoint: No limit (single use)
-- Refresh endpoint: 20 requests/minute per user
+### Test Google Login
+```bash
+curl -X POST http://127.0.0.1:8080/auth/google/login
+# Returns authUrl - open in browser
+```
 
-## Monitoring & Logging
+### Test with Session Token
+```bash
+# Get session token from browser localStorage
+curl http://127.0.0.1:8080/user/profile \
+  -H "Authorization: Bearer <your_session_token>"
+```
 
-**CloudWatch Metrics:**
-- Lambda invocation count and errors
-- API Gateway 4xx/5xx errors
-- DynamoDB read/write capacity and throttling
-- NAT Gateway bytes processed
-- VPC Endpoint connections
-
-**CloudWatch Logs:**
-- Lambda function logs (structured JSON)
-- API Gateway access logs
-- WAF logs (sampled to control costs)
-
-**CloudWatch Alarms:**
-- High WAF block rate (> 10% of requests)
-- API Gateway error rate (> 5%)
-- Lambda errors or timeouts
-- DynamoDB throttling events
-- High latency (> 1 second p99)
-- NAT Gateway connection errors
-
-**AWS WAF Monitoring:**
-- Blocked requests by rule
-- Top blocked IPs
-- Request patterns and anomalies
-- Bot detection metrics
-\
-## Roadmap
-
-- [x] Architecture planning
-- [x] Security design (Private API Gateway + CloudFront + WAF)
-- [ ] Terraform infrastructure code
-  - [ ] VPC and networking
-  - [ ] Private API Gateway with VPC endpoint
-  - [ ] CloudFront + WAF configuration
-  - [ ] Lambda functions with VPC config
-  - [ ] DynamoDB tables
-  - [ ] IAM roles and policies
-- [ ] Python application code
-  - [ ] Spotify OAuth implementation
-  - [ ] Token encryption utilities
-  - [ ] DynamoDB operations
-  - [ ] JWT session management
-- [ ] SoundCloud OAuth implementation
-- [ ] YouTube Music OAuth
-- [ ] Token refresh automation
-- [ ] Monitoring & alerting setup
-- [ ] CI/CD pipeline
-- [ ] Load testing
-- [ ] Documentation
-
-## Development Workflow
-
-1. **Local testing**: Use AWS SAM Local or run FastAPI directly
-2. **Unit tests**: Run `pytest` before commits
-3. **Integration tests**: Test against staging environment
-4. **Deploy to staging**: `sam deploy --config-env staging`
-5. **Manual testing**: Verify OAuth flows work
-6. **Deploy to production**: `sam deploy --config-env prod`
+### Verify Database
+```bash
+python scripts/inspect_dynamodb.py
+# Shows all users and their connections
+```
 
 ## Troubleshooting
 
-### OAuth Callback Fails
-- Check redirect URI matches exactly in platform settings
-- Verify CloudFront distribution is active
-- Check VPC endpoint connectivity
-- Verify API Gateway resource policy allows VPC endpoint
-- Check Lambda VPC configuration and security groups
-- Review CloudWatch logs for detailed errors
+### Google OAuth Fails
+- **Check**: Redirect URI exactly matches Google Console
+- **Verify**: `http://127.0.0.1:8080/auth/google/callback` (no trailing slash)
+- **Ensure**: Google+ API is enabled
+
+### Spotify Connection Fails
+- **Check**: Redirect URI is `/platforms/spotify/callback` (not `/auth/spotify/callback`)
+- **Verify**: All required scopes are requested
+- **Ensure**: Client ID/Secret are correct
 
 ### Token Refresh Issues
-- Verify refresh token hasn't expired
-- Check DynamoDB for token existence
-- Ensure OAuth secrets are correct in Secrets Manager
-- Verify Lambda has internet access via NAT Gateway
-- Check NAT Gateway status and routes
+- **Check**: Refresh token exists in DynamoDB
+- **Verify**: Token encryption key hasn't changed
+- **Ensure**: Spotify credentials are correct
 
-### High Latency
-- Check Lambda cold start times (VPC can add 1-2s)
-- Review NAT Gateway metrics
-- Verify DynamoDB on-demand capacity
-- Check CloudFront cache hit ratio
-- Review API Gateway integration timeout settings
+### "No module named 'mangum'"
+```bash
+pip install mangum
+# Or update main.py to make mangum optional (already done)
+```
 
-### Lambda Cannot Reach Internet
-- Verify NAT Gateway is in public subnet
-- Check route table has route to NAT Gateway (0.0.0.0/0)
-- Verify security groups allow outbound HTTPS (443)
-- Check VPC endpoint DNS resolution
+## Deployment
 
-### API Gateway 403 Errors
-- Verify request coming from VPC endpoint (check source VPC endpoint ID)
-- Check API Gateway resource policy
-- Review CloudFront origin configuration
-- Verify VPC endpoint security groups
+### AWS Lambda (Production)
+```bash
+# Package with dependencies
+pip install -r requirements.txt -t package/
+cp -r src package/
+cd package && zip -r ../lambda.zip . && cd ..
 
-## Contributing
+# Deploy via AWS Console, SAM, or Terraform
+```
 
-1. Create feature branch from `main`
-2. Write tests for new functionality
-3. Ensure all tests pass
-4. Submit pull request
-5. Code review required before merge
+### Environment Considerations
+- Use AWS Secrets Manager for production secrets
+- Enable CloudWatch logging
+- Configure VPC for DynamoDB access
+- Set up API Gateway with proper CORS
+- Use CloudFront + WAF for security
 
-## License
+## Roadmap
 
-[Your chosen license]
+- [x] Multi-provider SSO architecture
+- [x] Google OAuth implementation
+- [x] Spotify as platform connection
+- [x] JWT session management
+- [x] Token encryption
+- [x] User management endpoints
+- [ ] SoundCloud platform
+- [ ] Playlists
+- [ ] Microsoft OAuth
+- [ ] GitHub OAuth
+- [ ] YouTube Music platform
+- [ ] Token refresh automation
+- [ ] Production deployment (Terraform)
 
 ## Support
 
-For issues or questions:
-- Create an issue in GitHub
-- Check CloudWatch logs
-- Review API Gateway logs
+- Check DynamoDB Admin UI: `http://127.0.0.1:8001`
+- View backend logs in terminal
+- Use debug scripts in `/local` and `/scripts`
+- Review this documentation
