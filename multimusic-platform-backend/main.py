@@ -18,7 +18,14 @@ except ImportError:
 
 # Import handlers
 from src.handlers.auth import google
-from src.handlers.platforms import spotify
+from src.handlers.platforms import (
+    spotify_connect_handler,
+    spotify_callback_handler,
+    spotify_refresh_handler,
+    youtube_connect_handler,
+    youtube_callback_handler,
+    youtube_refresh_handler,
+)
 from src.handlers import user
 
 
@@ -28,7 +35,7 @@ class MockLambdaContext:
     def __init__(self):
         self.function_name = "local-dev"
         self.function_version = "$LATEST"
-        self.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:local-dev"
+        self.invoked_function_arn = "arn:aws:lambda:eu-west-1:123456789012:function:local-dev"
         self.memory_limit_in_mb = 128
         self.aws_request_id = "local-request-id"
         self.log_group_name = "/aws/lambda/local-dev"
@@ -83,7 +90,7 @@ async def google_callback(request: Request):
 async def spotify_connect(request: Request):
     """Initiate Spotify connection (requires auth)"""
     event = await request_to_event(request)
-    lambda_response = spotify.connect_handler(event, mock_context)
+    lambda_response = spotify_connect_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
 
 
@@ -91,7 +98,7 @@ async def spotify_connect(request: Request):
 async def spotify_callback(request: Request):
     """Handle Spotify OAuth callback"""
     event = await request_to_event(request)
-    lambda_response = spotify.callback_handler(event, mock_context)
+    lambda_response = spotify_callback_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
 
 
@@ -99,7 +106,31 @@ async def spotify_callback(request: Request):
 async def spotify_refresh(request: Request):
     """Refresh Spotify access token (requires auth)"""
     event = await request_to_event(request)
-    lambda_response = spotify.refresh_handler(event, mock_context)
+    lambda_response = spotify_refresh_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.post("/platforms/youtube/connect")
+async def youtube_connect(request: Request):
+    """Initiate YouTube Music connection (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = youtube_connect_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.get("/platforms/youtube/callback")
+async def youtube_callback(request: Request):
+    """Handle YouTube Music OAuth callback"""
+    event = await request_to_event(request)
+    lambda_response = youtube_callback_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.post("/platforms/youtube/refresh")
+async def youtube_refresh(request: Request):
+    """Refresh YouTube Music access token (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = youtube_refresh_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
 
 
