@@ -25,6 +25,9 @@ from src.handlers.platforms import (
     youtube_connect_handler,
     youtube_callback_handler,
     youtube_refresh_handler,
+    soundcloud_connect_handler,
+    soundcloud_callback_handler,
+    soundcloud_refresh_handler,
 )
 from src.handlers import user
 
@@ -131,6 +134,30 @@ async def youtube_refresh(request: Request):
     """Refresh YouTube Music access token (requires auth)"""
     event = await request_to_event(request)
     lambda_response = youtube_refresh_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.post("/platforms/soundcloud/connect")
+async def soundcloud_connect(request: Request):
+    """Initiate SoundCloud connection (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = soundcloud_connect_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.get("/platforms/soundcloud/callback")
+async def soundcloud_callback(request: Request):
+    """Handle SoundCloud OAuth callback"""
+    event = await request_to_event(request)
+    lambda_response = soundcloud_callback_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.post("/platforms/soundcloud/refresh")
+async def soundcloud_refresh(request: Request):
+    """Refresh SoundCloud access token (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = soundcloud_refresh_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
 
 
