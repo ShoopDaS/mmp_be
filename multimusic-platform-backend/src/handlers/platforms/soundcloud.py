@@ -1,6 +1,8 @@
 """
 SoundCloud Platform Connection Handlers
 """
+import base64
+import hashlib
 import json
 import os
 import secrets
@@ -24,6 +26,21 @@ FRONTEND_URL = os.environ.get('FRONTEND_URL')
 
 # Handler instance
 platform_handler = BasePlatformHandler('soundcloud')
+
+
+def generate_pkce_pair() -> tuple[str, str]:
+    """
+    Generate PKCE code_verifier and code_challenge pair
+    Returns: (code_verifier, code_challenge)
+    """
+    # Generate code verifier (43-128 characters)
+    code_verifier = secrets.token_urlsafe(64)
+
+    # Generate code challenge (SHA256 hash of verifier, base64url encoded)
+    challenge_bytes = hashlib.sha256(code_verifier.encode('utf-8')).digest()
+    code_challenge = base64.urlsafe_b64encode(challenge_bytes).decode('utf-8').rstrip('=')
+
+    return code_verifier, code_challenge
 
 
 @logger.inject_lambda_context
@@ -52,20 +69,26 @@ def connect_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, 
                 'connected': True
             })
         
-        # Generate state for CSRF protection (include user_id)
-        state = f"{user_id}:{secrets.token_urlsafe(32)}"
-        
-        # Build SoundCloud authorization URL
+        # Generate PKCE pair for OAuth 2.1
+        code_verifier, code_challenge = generate_pkce_pair()
+
+        # Generate state for CSRF protection (include user_id and code_verifier)
+        # Format: user_id:random_string:code_verifier
+        state = f"{user_id}:{secrets.token_urlsafe(16)}:{code_verifier}"
+
+        # Build SoundCloud authorization URL (OAuth 2.1 with PKCE)
         auth_params = {
             'client_id': SOUNDCLOUD_CLIENT_ID,
             'response_type': 'code',
             'redirect_uri': SOUNDCLOUD_REDIRECT_URI,
             'state': state,
+            'code_challenge': code_challenge,
+            'code_challenge_method': 'S256',
             'scope': 'non-expiring'
         }
-        
-        auth_url = f"https://soundcloud.com/connect?{urlencode(auth_params)}"
-        
+
+        auth_url = f"https://secure.soundcloud.com/authorize?{urlencode(auth_params)}"
+
         return success_response({
             'authUrl': auth_url,
             'state': state
@@ -106,19 +129,24 @@ def callback_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str,
                 302
             )
         
-        # Extract user ID from state
+        # Extract user ID and code_verifier from state
+        # Format: user_id:random_string:code_verifier
         try:
-            user_id, _ = state.split(':', 1)
-        except ValueError:
+            parts = state.split(':', 2)
+            if len(parts) != 3:
+                raise ValueError("Invalid state format")
+            user_id = parts[0]
+            code_verifier = parts[2]
+        except (ValueError, IndexError):
             logger.error("Invalid state format")
             return redirect_response(
                 f"{FRONTEND_URL}/dashboard?error=soundcloud_invalid_state",
                 302
             )
-        
-        # Exchange code for token
+
+        # Exchange code for token (with PKCE code_verifier)
         logger.info("Exchanging code for access token")
-        token_data = exchange_code_for_token(code)
+        token_data = exchange_code_for_token(code, code_verifier)
         
         # Get SoundCloud user info
         soundcloud_user_info = get_soundcloud_user_info(token_data['access_token'])
@@ -202,17 +230,33 @@ def refresh_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, 
                 return error_response("No access token available - please reconnect SoundCloud", 400)
         
         refresh_token = platform_handler.token_service.decrypt_token(encrypted_refresh_token)
-        
+
         # Request new access token from SoundCloud
         new_token_data = refresh_access_token(refresh_token)
-        
-        # Update stored access token
-        platform_handler.update_access_token(
+
+        # Update stored tokens (both access and refresh)
+        # Note: SoundCloud refresh tokens are one-time use, so we must update the refresh token too
+        encrypted_new_access = platform_handler.token_service.encrypt_token(new_token_data['access_token'])
+
+        updates = {
+            'accessToken': encrypted_new_access,
+            'expiresIn': new_token_data.get('expires_in', 31536000)
+        }
+
+        # Update refresh token if a new one is provided (one-time use tokens)
+        if 'refresh_token' in new_token_data:
+            encrypted_new_refresh = platform_handler.token_service.encrypt_token(new_token_data['refresh_token'])
+            updates['refreshToken'] = encrypted_new_refresh
+            logger.info("Updated refresh token (one-time use)")
+
+        from src.services.dynamodb_service import DynamoDBService
+        db_service = DynamoDBService()
+        db_service.update_item(
             user_id=user_id,
-            access_token=new_token_data['access_token'],
-            expires_in=new_token_data.get('expires_in', 31536000)
+            sk='platform#soundcloud',
+            updates=updates
         )
-        
+
         # Return new access token (decrypted)
         return success_response({
             'accessToken': new_token_data['access_token'],
@@ -224,17 +268,18 @@ def refresh_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, 
         return error_response(str(e), 500)
 
 
-def exchange_code_for_token(code: str) -> Dict[str, Any]:
-    """Exchange authorization code for access token"""
+def exchange_code_for_token(code: str, code_verifier: str) -> Dict[str, Any]:
+    """Exchange authorization code for access token (OAuth 2.1 with PKCE)"""
     with httpx.Client() as client:
         response = client.post(
-            'https://api.soundcloud.com/oauth2/token',
+            'https://secure.soundcloud.com/oauth/token',
             data={
                 'grant_type': 'authorization_code',
                 'code': code,
                 'redirect_uri': SOUNDCLOUD_REDIRECT_URI,
                 'client_id': SOUNDCLOUD_CLIENT_ID,
-                'client_secret': SOUNDCLOUD_CLIENT_SECRET
+                'client_secret': SOUNDCLOUD_CLIENT_SECRET,
+                'code_verifier': code_verifier
             },
             headers={'Content-Type': 'application/x-www-form-urlencoded'}
         )
@@ -243,10 +288,10 @@ def exchange_code_for_token(code: str) -> Dict[str, Any]:
 
 
 def refresh_access_token(refresh_token: str) -> Dict[str, Any]:
-    """Refresh access token using refresh token"""
+    """Refresh access token using refresh token (OAuth 2.1)"""
     with httpx.Client() as client:
         response = client.post(
-            'https://api.soundcloud.com/oauth2/token',
+            'https://secure.soundcloud.com/oauth/token',
             data={
                 'grant_type': 'refresh_token',
                 'refresh_token': refresh_token,
@@ -260,11 +305,14 @@ def refresh_access_token(refresh_token: str) -> Dict[str, Any]:
 
 
 def get_soundcloud_user_info(access_token: str) -> Dict[str, Any]:
-    """Get user information from SoundCloud"""
+    """Get user information from SoundCloud (OAuth 2.1)"""
     with httpx.Client() as client:
         response = client.get(
             'https://api.soundcloud.com/me',
-            params={'oauth_token': access_token}
+            headers={
+                'Authorization': f'OAuth {access_token}',
+                'Accept': 'application/json; charset=utf-8'
+            }
         )
         response.raise_for_status()
         return response.json()
