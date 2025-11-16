@@ -28,6 +28,7 @@ from src.handlers.platforms import (
     soundcloud_connect_handler,
     soundcloud_callback_handler,
     soundcloud_refresh_handler,
+    soundcloud_search_handler,
 )
 from src.handlers import user
 
@@ -160,6 +161,12 @@ async def soundcloud_refresh(request: Request):
     lambda_response = soundcloud_refresh_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
 
+@app.get("/platforms/soundcloud/search")
+async def soundcloud_search(request: Request):
+    """Search SoundCloud for tracks (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = soundcloud_search_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
 
 # ========== User Management Routes ==========
 
