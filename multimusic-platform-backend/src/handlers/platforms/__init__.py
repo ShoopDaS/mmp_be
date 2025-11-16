@@ -12,6 +12,7 @@ from src.handlers.platforms.youtube import refresh_handler as youtube_refresh_ha
 from src.handlers.platforms.soundcloud import connect_handler as soundcloud_connect_handler
 from src.handlers.platforms.soundcloud import callback_handler as soundcloud_callback_handler
 from src.handlers.platforms.soundcloud import refresh_handler as soundcloud_refresh_handler
+from src.handlers.platforms.soundcloud import search_handler as soundcloud_search_handler
 
 __all__ = [
     'spotify_connect_handler',
@@ -23,4 +24,5 @@ __all__ = [
     'soundcloud_connect_handler',
     'soundcloud_callback_handler',
     'soundcloud_refresh_handler',
+    'soundcloud_search_handler',
 ]

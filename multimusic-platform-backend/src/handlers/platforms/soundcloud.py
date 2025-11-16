@@ -316,3 +316,130 @@ def get_soundcloud_user_info(access_token: str) -> Dict[str, Any]:
         )
         response.raise_for_status()
         return response.json()
+
+
+def search_soundcloud_tracks(access_token: str, query: str, limit: int = 20) -> Dict[str, Any]:
+    """
+    Search SoundCloud tracks using API v1
+
+    Args:
+        access_token: SoundCloud OAuth access token
+        query: Search query string
+        limit: Maximum number of results (default: 20)
+
+    Returns:
+        List of track objects from SoundCloud API
+    """
+    with httpx.Client() as client:
+        response = client.get(
+            'https://api.soundcloud.com/tracks',
+            params={
+                'q': query,
+                'limit': limit,
+                'linked_partitioning': 1  # Enable pagination
+            },
+            headers={
+                'Authorization': f'OAuth {access_token}',  # Required by SoundCloud API
+                'Accept': 'application/json; charset=utf-8'
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+
+        # v1 API returns different structure than v2
+        data = response.json()
+
+        # If using linked_partitioning, data has 'collection' key
+        # Otherwise it's a direct array
+        if isinstance(data, dict) and 'collection' in data:
+            return {'collection': data['collection']}
+        else:
+            return {'collection': data if isinstance(data, list) else []}
+
+
+
+@logger.inject_lambda_context
+def search_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
+    """
+    Search SoundCloud for tracks
+
+    GET /platforms/soundcloud/search?q={query}
+    Requires: Authorization header with Bearer token
+
+    Returns normalized track data matching frontend Track interface
+    """
+    try:
+        logger.info("Processing SoundCloud search request")
+
+        # Verify user is authenticated
+        user_id = platform_handler.get_user_from_session(event)
+        if not user_id:
+            return error_response("Authentication required", 401)
+
+        # Get query from query string parameters
+        query_params = event.get('queryStringParameters', {}) or {}
+        query = query_params.get('q', '').strip()
+
+        if not query:
+            return error_response("Query parameter 'q' is required", 400)
+
+        logger.info(f"User {user_id} searching SoundCloud for: {query}")
+
+        # Get user's SoundCloud access token
+        token_data = platform_handler.get_platform_tokens(user_id)
+        if not token_data:
+            return error_response("SoundCloud not connected. Please connect your SoundCloud account first.", 404)
+
+        # Decrypt access token
+        encrypted_token = token_data.get('accessToken')
+        if not encrypted_token:
+            return error_response("No access token found", 500)
+
+        access_token = platform_handler.token_service.decrypt_token(encrypted_token)
+
+        # Search SoundCloud
+        logger.info(f"Calling SoundCloud API search with query: {query}")
+        search_results = search_soundcloud_tracks(access_token, query)
+
+        # Normalize track data to match frontend Track interface
+        tracks = []
+        collection = search_results.get('collection', [])
+
+        for item in collection:
+            if not item or not item.get('id'):
+                continue
+
+            # Get the best quality artwork
+            artwork_url = item.get('artwork_url', '')
+            if artwork_url:
+                # Replace -large with higher quality -t500x500
+                artwork_url = artwork_url.replace('-large', '-t500x500')
+            elif item.get('user', {}).get('avatar_url'):
+                # Fallback to user avatar
+                artwork_url = item['user']['avatar_url']
+
+            track = {
+                'id': f"soundcloud-{item.get('id')}",
+                'platform': 'soundcloud',
+                'name': item.get('title', 'Unknown Track'),
+                'uri': item.get('permalink_url', ''),
+                'artists': [{'name': item.get('user', {}).get('username', 'Unknown Artist')}],
+                'album': {
+                    'name': item.get('user', {}).get('username', 'Unknown Artist'),
+                    'images': [{'url': artwork_url}] if artwork_url else []
+                },
+                'duration_ms': item.get('duration', 0),  # Already in milliseconds
+                'preview_url': item.get('stream_url')
+            }
+            tracks.append(track)
+
+        logger.info(f"Found {len(tracks)} tracks for query: {query}")
+
+        return success_response({'tracks': tracks})
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"SoundCloud API error: {e.response.status_code} - {e.response.text}")
+        return error_response(f"SoundCloud API error: {e.response.status_code}", 500)
+    except Exception as e:
+        logger.exception("Error searching SoundCloud")
+        return error_response(str(e), 500)
