@@ -325,3 +325,147 @@ def _cached_items_to_playlists(cached_items: List[Dict[str, Any]]) -> List[Dict[
             'owner': item.get('owner', ''),
         })
     return playlists
+
+
+# ========== Per-Playlist Refresh ==========
+
+@logger.inject_lambda_context
+def youtube_playlist_detail_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
+    """
+    Refresh a single YouTube playlist from the YouTube API.
+
+    GET /platforms/youtube/playlists/{playlist_id}
+    Fetches fresh metadata from YouTube, updates DynamoDB cache for this one playlist.
+    """
+    try:
+        user_id = youtube_platform.get_user_from_session(event)
+        if not user_id:
+            return error_response("Authentication required", 401)
+
+        token_data = youtube_platform.get_platform_tokens(user_id)
+        if not token_data:
+            return error_response("YouTube Music not connected", 404)
+
+        path_params = event.get('pathParameters', {}) or {}
+        playlist_id = path_params.get('playlist_id')
+        if not playlist_id:
+            return error_response("playlist_id is required", 400)
+
+        logger.info(f"Refreshing single YouTube playlist {playlist_id} (user {user_id})")
+
+        encrypted_access_token = token_data.get('accessToken')
+        if not encrypted_access_token:
+            return error_response("No access token available", 500)
+
+        access_token = youtube_platform.token_service.decrypt_token(encrypted_access_token)
+
+        # Fetch this specific playlist from YouTube API (1 quota unit)
+        raw_playlist = _fetch_youtube_playlist_by_id(access_token, playlist_id)
+        if not raw_playlist:
+            return error_response("Playlist not found on YouTube", 404)
+
+        normalized = _normalize_youtube_playlists([raw_playlist])[0]
+
+        # Update just this one entry in DynamoDB cache
+        playlist_db.update_cached_playlist(user_id, 'youtube', normalized)
+
+        return success_response({
+            'playlist': normalized,
+            'source': 'api',
+        })
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"YouTube API error: {e.response.status_code} - {e.response.text}")
+        return error_response(f"YouTube API error: {e.response.status_code}", 500)
+    except Exception as e:
+        logger.exception("Error refreshing YouTube playlist")
+        return error_response(str(e), 500)
+
+
+@logger.inject_lambda_context
+def soundcloud_playlist_detail_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
+    """
+    Refresh a single SoundCloud playlist from the SoundCloud API.
+
+    GET /platforms/soundcloud/playlists/{playlist_id}
+    Fetches fresh metadata from SoundCloud, updates DynamoDB cache for this one playlist.
+    """
+    try:
+        user_id = soundcloud_platform.get_user_from_session(event)
+        if not user_id:
+            return error_response("Authentication required", 401)
+
+        token_data = soundcloud_platform.get_platform_tokens(user_id)
+        if not token_data:
+            return error_response("SoundCloud not connected", 404)
+
+        path_params = event.get('pathParameters', {}) or {}
+        playlist_id = path_params.get('playlist_id')
+        if not playlist_id:
+            return error_response("playlist_id is required", 400)
+
+        logger.info(f"Refreshing single SoundCloud playlist {playlist_id} (user {user_id})")
+
+        encrypted_access_token = token_data.get('accessToken')
+        if not encrypted_access_token:
+            return error_response("No access token available", 500)
+
+        access_token = soundcloud_platform.token_service.decrypt_token(encrypted_access_token)
+
+        # Fetch this specific playlist from SoundCloud API
+        raw_playlist = _fetch_soundcloud_playlist_by_id(access_token, playlist_id)
+        if not raw_playlist:
+            return error_response("Playlist not found on SoundCloud", 404)
+
+        normalized = _normalize_soundcloud_playlists([raw_playlist])[0]
+
+        # Update just this one entry in DynamoDB cache
+        playlist_db.update_cached_playlist(user_id, 'soundcloud', normalized)
+
+        return success_response({
+            'playlist': normalized,
+            'source': 'api',
+        })
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"SoundCloud API error: {e.response.status_code} - {e.response.text}")
+        return error_response(f"SoundCloud API error: {e.response.status_code}", 500)
+    except Exception as e:
+        logger.exception("Error refreshing SoundCloud playlist")
+        return error_response(str(e), 500)
+
+
+def _fetch_youtube_playlist_by_id(access_token: str, playlist_id: str) -> Dict[str, Any] | None:
+    """Fetch a single YouTube playlist by ID. Costs 1 quota unit."""
+    with httpx.Client() as client:
+        response = client.get(
+            'https://www.googleapis.com/youtube/v3/playlists',
+            params={
+                'part': 'snippet,contentDetails',
+                'id': playlist_id,
+            },
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        items = data.get('items', [])
+        return items[0] if items else None
+
+
+def _fetch_soundcloud_playlist_by_id(access_token: str, playlist_id: str) -> Dict[str, Any] | None:
+    """Fetch a single SoundCloud playlist by ID."""
+    with httpx.Client() as client:
+        response = client.get(
+            f'https://api.soundcloud.com/playlists/{playlist_id}',
+            headers={
+                'Authorization': f'OAuth {access_token}',
+                'Accept': 'application/json; charset=utf-8',
+            },
+            timeout=15,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()

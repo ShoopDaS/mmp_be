@@ -214,6 +214,48 @@ class PlaylistDynamoDBService:
             logger.error(f"Error reading cache metadata: {e}")
             return None
 
+    def update_cached_playlist(
+        self,
+        user_id: str,
+        platform: str,
+        playlist: Dict[str, Any],
+    ) -> None:
+        """
+        Update (or insert) a single cached playlist entry with fresh 24h TTL.
+
+        Args:
+            user_id: Internal MMP user ID
+            platform: Platform name ('youtube' or 'soundcloud')
+            playlist: Normalized playlist dict with at least 'id'
+        """
+        try:
+            now = int(time.time())
+            ttl_value = now + CACHE_TTL_SECONDS
+            playlist_id = playlist['id']
+
+            item = {
+                'userId': user_id,
+                'sk': f"cache#{platform}#{playlist_id}",
+                'platform': platform,
+                'playlistId': playlist_id,
+                'name': playlist.get('name', 'Unknown Playlist'),
+                'trackCount': playlist.get('trackCount', 0),
+                'imageUrl': playlist.get('imageUrl', ''),
+                'uri': playlist.get('uri', ''),
+                'owner': playlist.get('owner', ''),
+                'cachedAt': now,
+                'ttl': ttl_value,
+            }
+            self.table.put_item(Item=item)
+
+            logger.info(
+                f"Updated cached playlist {playlist_id} for {platform} (user {user_id})"
+            )
+
+        except Exception as e:
+            logger.error(f"Error updating cached playlist: {e}")
+            raise
+
     # ========== Custom Playlist Operations (Future) ==========
 
     # These methods are stubs for future custom MMP playlist support.
@@ -223,4 +265,4 @@ class PlaylistDynamoDBService:
     # def get_custom_playlists(self, user_id): ...
     # def add_track_to_custom_playlist(self, user_id, playlist_id, track): ...
     # def remove_track_from_custom_playlist(self, user_id, playlist_id, track_id): ...
-    # def delete_custom_playlist(self, user_id, playlist_id): ...:
+    # def delete_custom_playlist(self, user_id, playlist_id): ...

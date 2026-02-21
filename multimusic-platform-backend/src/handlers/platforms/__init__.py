@@ -16,6 +16,8 @@ from src.handlers.platforms.soundcloud import search_handler as soundcloud_searc
 
 from src.handlers.platforms.playlists import youtube_playlists_handler
 from src.handlers.platforms.playlists import soundcloud_playlists_handler
+from src.handlers.platforms.playlists import youtube_playlist_detail_handler
+from src.handlers.platforms.playlists import soundcloud_playlist_detail_handler
 
 __all__ = [
     'spotify_connect_handler',
@@ -30,4 +32,6 @@ __all__ = [
     'soundcloud_search_handler',
     'youtube_playlists_handler',
     'soundcloud_playlists_handler',
+    'youtube_playlist_detail_handler',
+    'soundcloud_playlist_detail_handler',
 ]
