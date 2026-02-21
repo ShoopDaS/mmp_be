@@ -5,6 +5,7 @@ go to mmp_be/multimusic-platform-backend/local
 docker-compose up -d
 go to mmp_be/multimusic-platform-backend/scripts
 python create_tables.py
+python create_playlists_table.py
 
 
 to run the app: (use venv)

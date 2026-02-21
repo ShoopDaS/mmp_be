@@ -14,6 +14,9 @@ from src.handlers.platforms.soundcloud import callback_handler as soundcloud_cal
 from src.handlers.platforms.soundcloud import refresh_handler as soundcloud_refresh_handler
 from src.handlers.platforms.soundcloud import search_handler as soundcloud_search_handler
 
+from src.handlers.platforms.playlists import youtube_playlists_handler
+from src.handlers.platforms.playlists import soundcloud_playlists_handler
+
 __all__ = [
     'spotify_connect_handler',
     'spotify_callback_handler',
@@ -25,4 +28,6 @@ __all__ = [
     'soundcloud_callback_handler',
     'soundcloud_refresh_handler',
     'soundcloud_search_handler',
+    'youtube_playlists_handler',
+    'soundcloud_playlists_handler',
 ]

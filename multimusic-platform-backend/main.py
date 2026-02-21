@@ -29,6 +29,8 @@ from src.handlers.platforms import (
     soundcloud_callback_handler,
     soundcloud_refresh_handler,
     soundcloud_search_handler,
+    youtube_playlists_handler,
+    soundcloud_playlists_handler,
 )
 from src.handlers import user
 
@@ -167,6 +169,25 @@ async def soundcloud_search(request: Request):
     event = await request_to_event(request)
     lambda_response = soundcloud_search_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
+
+
+# ========== Platform Playlist Routes ==========
+
+@app.get("/platforms/youtube/playlists")
+async def youtube_playlists(request: Request):
+    """Get user's YouTube playlists with caching (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = youtube_playlists_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.get("/platforms/soundcloud/playlists")
+async def soundcloud_playlists(request: Request):
+    """Get user's SoundCloud playlists with caching (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = soundcloud_playlists_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
 
 # ========== User Management Routes ==========
 
