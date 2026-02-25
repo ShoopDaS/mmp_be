@@ -35,6 +35,7 @@ from src.handlers.platforms import (
     soundcloud_playlist_detail_handler,
 )
 from src.handlers import user
+from src.handlers import custom_playlists
 
 
 # Mock Lambda Context for local development
@@ -241,6 +242,78 @@ async def delete_platform(request: Request, platform: str):
     event = await request_to_event(request)
     event['pathParameters'] = {'platform': platform}
     lambda_response = user.delete_platform_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+# ========== Custom Playlist Routes ==========
+
+@app.get("/user/playlists")
+async def get_playlists(request: Request):
+    """List user's custom playlists (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = custom_playlists.get_playlists_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.post("/user/playlists")
+async def create_playlist(request: Request):
+    """Create a new custom playlist (requires auth)"""
+    event = await request_to_event(request)
+    lambda_response = custom_playlists.create_playlist_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.put("/user/playlists/{playlist_id}")
+async def update_playlist(request: Request, playlist_id: str):
+    """Update custom playlist metadata (requires auth)"""
+    event = await request_to_event(request)
+    event["pathParameters"] = {"playlistId": playlist_id}
+    lambda_response = custom_playlists.update_playlist_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.delete("/user/playlists/{playlist_id}")
+async def delete_playlist(request: Request, playlist_id: str):
+    """Delete a custom playlist and all its tracks (requires auth)"""
+    event = await request_to_event(request)
+    event["pathParameters"] = {"playlistId": playlist_id}
+    lambda_response = custom_playlists.delete_playlist_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.get("/user/playlists/{playlist_id}/tracks")
+async def get_playlist_tracks(request: Request, playlist_id: str):
+    """Get all tracks in a custom playlist (requires auth)"""
+    event = await request_to_event(request)
+    event["pathParameters"] = {"playlistId": playlist_id}
+    lambda_response = custom_playlists.get_tracks_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.post("/user/playlists/{playlist_id}/tracks")
+async def add_playlist_track(request: Request, playlist_id: str):
+    """Add a track to a custom playlist (requires auth)"""
+    event = await request_to_event(request)
+    event["pathParameters"] = {"playlistId": playlist_id}
+    lambda_response = custom_playlists.add_track_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.put("/user/playlists/{playlist_id}/tracks/reorder")
+async def reorder_playlist_tracks(request: Request, playlist_id: str):
+    """Reorder tracks in a custom playlist (requires auth)"""
+    event = await request_to_event(request)
+    event["pathParameters"] = {"playlistId": playlist_id}
+    lambda_response = custom_playlists.reorder_tracks_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.delete("/user/playlists/{playlist_id}/tracks/{track_id}")
+async def delete_playlist_track(request: Request, playlist_id: str, track_id: str):
+    """Remove a track from a custom playlist (requires auth)"""
+    event = await request_to_event(request)
+    event["pathParameters"] = {"playlistId": playlist_id, "trackId": track_id}
+    lambda_response = custom_playlists.delete_track_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
 
 
