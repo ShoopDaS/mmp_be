@@ -225,14 +225,7 @@ class CustomPlaylistService:
 
         Returns the first matching item, or None if not found.
         """
-        all_tracks = self.get_all_tracks(playlist_id)
-        stored_ids = [t.get("trackId") for t in all_tracks]
-        logger.info(
-            f"find_track_by_track_id: searching for {track_id!r} "
-            f"in playlist {playlist_id} — "
-            f"{len(all_tracks)} track(s) stored, ids: {stored_ids}"
-        )
-        for track in all_tracks:
+        for track in self.get_all_tracks(playlist_id):
             if track.get("trackId") == track_id:
                 return track
         return None
