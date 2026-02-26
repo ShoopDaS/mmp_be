@@ -218,23 +218,17 @@ class CustomPlaylistService:
         """
         Find a track item by its trackId attribute.
 
-        Queries all tracks for the playlist and filters by trackId.
+        Fetches all tracks for the playlist (via get_all_tracks) and filters
+        in Python.  A DynamoDB FilterExpression on a non-key attribute can
+        silently miss items when the filter eliminates every item on a page,
+        so Python-side filtering against the full list is more reliable here.
+
         Returns the first matching item, or None if not found.
         """
-        kwargs: Dict[str, Any] = {
-            "KeyConditionExpression": Key("playlistId").eq(playlist_id),
-            "FilterExpression": Attr("trackId").eq(track_id),
-        }
-
-        while True:
-            response = self.tracks_table.query(**kwargs)
-            items = response.get("Items", [])
-            if items:
-                return items[0]
-            last_key = response.get("LastEvaluatedKey")
-            if not last_key:
-                return None
-            kwargs["ExclusiveStartKey"] = last_key
+        for track in self.get_all_tracks(playlist_id):
+            if track.get("trackId") == track_id:
+                return track
+        return None
 
     def delete_track(self, playlist_id: str, order_track_sk: str) -> None:
         """Delete a track by its full composite key."""
