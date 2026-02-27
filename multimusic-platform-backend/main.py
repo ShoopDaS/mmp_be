@@ -263,7 +263,7 @@ async def create_playlist(request: Request):
     return lambda_response_to_fastapi(lambda_response)
 
 
-@app.put("/user/playlists/{playlist_id}")
+@app.api_route("/user/playlists/{playlist_id}", methods=["PUT", "PATCH"])
 async def update_playlist(request: Request, playlist_id: str):
     """Update custom playlist metadata (requires auth)"""
     event = await request_to_event(request)

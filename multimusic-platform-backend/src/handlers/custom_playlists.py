@@ -24,9 +24,16 @@ from typing import Any, Dict, List, Optional
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
+from src.constants.playlist import (
+    COVER_EMOJI_OPTIONS,
+    DEFAULT_COVER,
+    PLAYLIST_DESC_MAX_LEN,
+    PLAYLIST_NAME_MAX_LEN,
+)
 from src.services.custom_playlist_service import CustomPlaylistService, _build_track_sk
 from src.services.jwt_service import JWTService
 from src.utils.responses import error_response, success_response
+from src.utils.sanitize import sanitize_text
 
 logger = Logger()
 
@@ -109,15 +116,46 @@ def get_playlists_handler(event: Dict[str, Any], context: LambdaContext) -> Dict
 def create_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
     """
     POST /user/playlists
-    Body: { name: string, description?: string }
+    Body: { name: string, coverImage?: string, description?: string }
     """
     try:
         user_id = _get_user_id(event)
 
         body = json.loads(event.get("body") or "{}")
-        name = body.get("name", "").strip()
+
+        # --- name ---
+        raw_name = body.get("name")
+        if not isinstance(raw_name, str):
+            return error_response("name must be a string", 400)
+        name = sanitize_text(raw_name)
         if not name:
             return error_response("name is required", 400)
+        if len(name) > PLAYLIST_NAME_MAX_LEN:
+            return error_response(
+                f"name must be {PLAYLIST_NAME_MAX_LEN} characters or fewer", 400
+            )
+
+        # --- coverImage ---
+        cover_image_raw = body.get("coverImage")
+        if cover_image_raw is None:
+            cover_image = DEFAULT_COVER
+        elif cover_image_raw not in COVER_EMOJI_OPTIONS:
+            return error_response("Invalid coverImage value", 400)
+        else:
+            cover_image = cover_image_raw
+
+        # --- description ---
+        raw_desc = body.get("description")
+        if raw_desc is None:
+            description = ""
+        elif not isinstance(raw_desc, str):
+            return error_response("description must be a string", 400)
+        else:
+            description = sanitize_text(raw_desc)
+        if len(description) > PLAYLIST_DESC_MAX_LEN:
+            return error_response(
+                f"description must be {PLAYLIST_DESC_MAX_LEN} characters or fewer", 400
+            )
 
         now = datetime.utcnow().isoformat()
         playlist_id = str(uuid.uuid4())
@@ -126,15 +164,13 @@ def create_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Di
             "userId": user_id,
             "playlistId": playlist_id,
             "name": name,
+            "coverImage": cover_image,
+            "description": description,
             "trackCount": 0,
             "needsRebalance": False,
             "createdAt": now,
             "updatedAt": now,
         }
-
-        description = body.get("description")
-        if description is not None:
-            item["description"] = description
 
         playlist_service.create_playlist(item)
         return success_response({"playlist": _serialize(item)}, 201)
@@ -152,7 +188,7 @@ def create_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Di
 def update_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
     """
     PUT /user/playlists/:playlistId
-    Body: { name?: string, description?: string, imageUrl?: string }
+    Body: { name?: string, coverImage?: string, description?: string }
     """
     try:
         user_id = _get_user_id(event)
@@ -170,11 +206,33 @@ def update_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Di
         body = json.loads(event.get("body") or "{}")
 
         updates: Dict[str, Any] = {"updatedAt": datetime.utcnow().isoformat()}
-        for field in ("name", "description", "imageUrl"):
-            if field in body:
-                if field == "name" and not str(body[field]).strip():
-                    return error_response("name cannot be empty", 400)
-                updates[field] = body[field]
+
+        if "name" in body:
+            if not isinstance(body["name"], str):
+                return error_response("name must be a string", 400)
+            name = sanitize_text(body["name"])
+            if not name:
+                return error_response("name cannot be empty", 400)
+            if len(name) > PLAYLIST_NAME_MAX_LEN:
+                return error_response(
+                    f"name must be {PLAYLIST_NAME_MAX_LEN} characters or fewer", 400
+                )
+            updates["name"] = name
+
+        if "coverImage" in body:
+            if body["coverImage"] not in COVER_EMOJI_OPTIONS:
+                return error_response("Invalid coverImage value", 400)
+            updates["coverImage"] = body["coverImage"]
+
+        if "description" in body:
+            if not isinstance(body["description"], str):
+                return error_response("description must be a string", 400)
+            description = sanitize_text(body["description"])
+            if len(description) > PLAYLIST_DESC_MAX_LEN:
+                return error_response(
+                    f"description must be {PLAYLIST_DESC_MAX_LEN} characters or fewer", 400
+                )
+            updates["description"] = description
 
         if len(updates) == 1:
             # Only updatedAt — nothing to update
