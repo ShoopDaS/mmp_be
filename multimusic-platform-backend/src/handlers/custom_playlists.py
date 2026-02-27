@@ -124,7 +124,10 @@ def create_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Di
         body = json.loads(event.get("body") or "{}")
 
         # --- name ---
-        name = sanitize_text(body.get("name", ""))
+        raw_name = body.get("name")
+        if not isinstance(raw_name, str):
+            return error_response("name must be a string", 400)
+        name = sanitize_text(raw_name)
         if not name:
             return error_response("name is required", 400)
         if len(name) > PLAYLIST_NAME_MAX_LEN:
@@ -142,7 +145,13 @@ def create_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Di
             cover_image = cover_image_raw
 
         # --- description ---
-        description = sanitize_text(str(body.get("description", "")))
+        raw_desc = body.get("description")
+        if raw_desc is None:
+            description = ""
+        elif not isinstance(raw_desc, str):
+            return error_response("description must be a string", 400)
+        else:
+            description = sanitize_text(raw_desc)
         if len(description) > PLAYLIST_DESC_MAX_LEN:
             return error_response(
                 f"description must be {PLAYLIST_DESC_MAX_LEN} characters or fewer", 400
@@ -199,7 +208,9 @@ def update_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Di
         updates: Dict[str, Any] = {"updatedAt": datetime.utcnow().isoformat()}
 
         if "name" in body:
-            name = sanitize_text(str(body["name"]))
+            if not isinstance(body["name"], str):
+                return error_response("name must be a string", 400)
+            name = sanitize_text(body["name"])
             if not name:
                 return error_response("name cannot be empty", 400)
             if len(name) > PLAYLIST_NAME_MAX_LEN:
@@ -214,7 +225,9 @@ def update_playlist_handler(event: Dict[str, Any], context: LambdaContext) -> Di
             updates["coverImage"] = body["coverImage"]
 
         if "description" in body:
-            description = sanitize_text(str(body["description"]))
+            if not isinstance(body["description"], str):
+                return error_response("description must be a string", 400)
+            description = sanitize_text(body["description"])
             if len(description) > PLAYLIST_DESC_MAX_LEN:
                 return error_response(
                     f"description must be {PLAYLIST_DESC_MAX_LEN} characters or fewer", 400
