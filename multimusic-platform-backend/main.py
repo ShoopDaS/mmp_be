@@ -264,6 +264,7 @@ async def create_playlist(request: Request):
 
 
 @app.put("/user/playlists/{playlist_id}")
+@app.patch("/user/playlists/{playlist_id}")
 async def update_playlist(request: Request, playlist_id: str):
     """Update custom playlist metadata (requires auth)"""
     event = await request_to_event(request)
