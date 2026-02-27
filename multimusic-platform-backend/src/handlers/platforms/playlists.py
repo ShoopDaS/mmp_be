@@ -17,6 +17,7 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from src.handlers.platforms.base import BasePlatformHandler
 from src.services.playlist_dynamodb_service import PlaylistDynamoDBService
+from src.utils.playlist_filters import filter_youtube_playlists, filter_soundcloud_playlists
 from src.utils.responses import success_response, error_response
 
 logger = Logger()
@@ -149,6 +150,7 @@ def _fetch_youtube_playlists(access_token: str) -> List[Dict[str, Any]]:
 
 def _normalize_youtube_playlists(raw_playlists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalize YouTube API playlist data to unified format."""
+    raw_playlists = filter_youtube_playlists(raw_playlists)
     playlists = []
     for item in raw_playlists:
         snippet = item.get('snippet', {})
@@ -284,6 +286,7 @@ def _fetch_soundcloud_playlists(access_token: str) -> List[Dict[str, Any]]:
 
 def _normalize_soundcloud_playlists(raw_playlists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalize SoundCloud API playlist data to unified format."""
+    raw_playlists = filter_soundcloud_playlists(raw_playlists)
     playlists = []
     for item in raw_playlists:
         artwork_url = item.get('artwork_url', '')
