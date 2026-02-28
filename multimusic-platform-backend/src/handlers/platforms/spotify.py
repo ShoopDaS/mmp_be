@@ -57,7 +57,9 @@ def connect_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, 
                 'user-read-email',
                 'streaming',
                 'user-modify-playback-state',
-                'user-read-playback-state'
+                'user-read-playback-state',
+                'user-library-read',
+                'user-library-modify'
             ])
         }
         
