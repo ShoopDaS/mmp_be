@@ -16,6 +16,7 @@ from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from src.handlers.platforms.base import BasePlatformHandler
+from src.handlers.platforms.soundcloud import normalize_soundcloud_track
 from src.services.playlist_dynamodb_service import PlaylistDynamoDBService
 from src.utils.responses import success_response, error_response
 
@@ -440,6 +441,15 @@ def soundcloud_playlist_detail_handler(event: Dict[str, Any], context: LambdaCon
             raw_tracks = _fetch_soundcloud_liked_tracks(access_token)
             tracks = _normalize_soundcloud_tracks(raw_tracks)
             return success_response({
+                'playlist': {
+                    'id': 'soundcloud-liked-songs',
+                    'platform': 'soundcloud',
+                    'name': 'Liked Songs',
+                    'trackCount': len(tracks),
+                    'imageUrl': '',
+                    'uri': 'soundcloud-liked-songs',
+                    'owner': '',
+                },
                 'tracks': tracks,
                 'source': 'api',
             })
@@ -507,12 +517,17 @@ def _fetch_soundcloud_liked_tracks(access_token: str) -> List[Dict[str, Any]]:
     """Fetch all liked tracks for the authenticated SoundCloud user, paginated."""
     tracks = []
     url = 'https://api.soundcloud.com/me/favorites'
+    params = {'limit': 200, 'linked_partitioning': 1}
+    max_pages = 50  # Safety limit: 50 * 200 = 10,000 tracks max
 
     with httpx.Client() as client:
-        while url:
+        for _ in range(max_pages):
+            if not url:
+                break
+
             response = client.get(
                 url,
-                params={'limit': 200, 'linked_partitioning': 1},
+                params=params,
                 headers={
                     'Authorization': f'OAuth {access_token}',
                     'Accept': 'application/json; charset=utf-8',
@@ -528,6 +543,7 @@ def _fetch_soundcloud_liked_tracks(access_token: str) -> List[Dict[str, Any]]:
             elif isinstance(data, dict):
                 tracks.extend(data.get('collection', []))
                 url = data.get('next_href')
+                params = None  # next_href already contains query params
             else:
                 break
 
@@ -537,28 +553,8 @@ def _fetch_soundcloud_liked_tracks(access_token: str) -> List[Dict[str, Any]]:
 
 def _normalize_soundcloud_tracks(raw_tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Normalize SoundCloud track objects to the frontend Track interface."""
-    tracks = []
-    for item in raw_tracks:
-        if not item or not item.get('id'):
-            continue
-
-        artwork_url = item.get('artwork_url', '')
-        if artwork_url:
-            artwork_url = artwork_url.replace('-large', '-t500x500')
-        elif item.get('user', {}).get('avatar_url'):
-            artwork_url = item['user']['avatar_url']
-
-        tracks.append({
-            'id': f"soundcloud-{item.get('id')}",
-            'platform': 'soundcloud',
-            'name': item.get('title', 'Unknown Track'),
-            'uri': item.get('permalink_url', ''),
-            'artists': [{'name': item.get('user', {}).get('username', 'Unknown Artist')}],
-            'album': {
-                'name': item.get('user', {}).get('username', 'Unknown Artist'),
-                'images': [{'url': artwork_url}] if artwork_url else [],
-            },
-            'duration_ms': item.get('duration', 0),
-            'preview_url': item.get('stream_url'),
-        })
-    return tracks
+    return [
+        normalize_soundcloud_track(item)
+        for item in raw_tracks
+        if item and item.get('id')
+    ]

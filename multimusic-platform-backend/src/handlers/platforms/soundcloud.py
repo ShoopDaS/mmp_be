@@ -358,6 +358,29 @@ def search_soundcloud_tracks(access_token: str, query: str, limit: int = 20) -> 
 
 
 
+def normalize_soundcloud_track(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a single SoundCloud API track object to the frontend Track interface."""
+    artwork_url = item.get('artwork_url', '')
+    if artwork_url:
+        artwork_url = artwork_url.replace('-large', '-t500x500')
+    elif item.get('user', {}).get('avatar_url'):
+        artwork_url = item['user']['avatar_url']
+
+    return {
+        'id': f"soundcloud-{item.get('id')}",
+        'platform': 'soundcloud',
+        'name': item.get('title', 'Unknown Track'),
+        'uri': item.get('permalink_url', ''),
+        'artists': [{'name': item.get('user', {}).get('username', 'Unknown Artist')}],
+        'album': {
+            'name': item.get('user', {}).get('username', 'Unknown Artist'),
+            'images': [{'url': artwork_url}] if artwork_url else [],
+        },
+        'duration_ms': item.get('duration', 0),
+        'preview_url': item.get('stream_url'),
+    }
+
+
 @logger.inject_lambda_context
 def search_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
     """
@@ -408,30 +431,7 @@ def search_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
         for item in collection:
             if not item or not item.get('id'):
                 continue
-
-            # Get the best quality artwork
-            artwork_url = item.get('artwork_url', '')
-            if artwork_url:
-                # Replace -large with higher quality -t500x500
-                artwork_url = artwork_url.replace('-large', '-t500x500')
-            elif item.get('user', {}).get('avatar_url'):
-                # Fallback to user avatar
-                artwork_url = item['user']['avatar_url']
-
-            track = {
-                'id': f"soundcloud-{item.get('id')}",
-                'platform': 'soundcloud',
-                'name': item.get('title', 'Unknown Track'),
-                'uri': item.get('permalink_url', ''),
-                'artists': [{'name': item.get('user', {}).get('username', 'Unknown Artist')}],
-                'album': {
-                    'name': item.get('user', {}).get('username', 'Unknown Artist'),
-                    'images': [{'url': artwork_url}] if artwork_url else []
-                },
-                'duration_ms': item.get('duration', 0),  # Already in milliseconds
-                'preview_url': item.get('stream_url')
-            }
-            tracks.append(track)
+            tracks.append(normalize_soundcloud_track(item))
 
         logger.info(f"Found {len(tracks)} tracks for query: {query}")
 
@@ -460,9 +460,9 @@ def like_track_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[st
 
         path_params = event.get('pathParameters', {}) or {}
         track_id = path_params.get('track_id', '')
-        sc_track_id = track_id.replace('soundcloud-', '')
+        sc_track_id = track_id.removeprefix('soundcloud-')
         if not sc_track_id:
-            return error_response("track_id is required", 400)
+            return error_response("Invalid track_id", 400)
 
         token_data = platform_handler.get_platform_tokens(user_id)
         if not token_data:
@@ -513,9 +513,9 @@ def unlike_track_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[
 
         path_params = event.get('pathParameters', {}) or {}
         track_id = path_params.get('track_id', '')
-        sc_track_id = track_id.replace('soundcloud-', '')
+        sc_track_id = track_id.removeprefix('soundcloud-')
         if not sc_track_id:
-            return error_response("track_id is required", 400)
+            return error_response("Invalid track_id", 400)
 
         token_data = platform_handler.get_platform_tokens(user_id)
         if not token_data:
