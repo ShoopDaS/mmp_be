@@ -256,7 +256,7 @@ def _fetch_soundcloud_playlists(access_token: str) -> List[Dict[str, Any]]:
     Fetch all playlists from SoundCloud API.
 
     Uses /me/playlists endpoint (authenticated user's playlists).
-    Also fetches liked playlists via /me/likes/playlists.
+    Also injects a virtual "Liked Songs" playlist from /me profile data.
     """
     all_playlists = []
 
@@ -278,7 +278,30 @@ def _fetch_soundcloud_playlists(access_token: str) -> List[Dict[str, Any]]:
         elif isinstance(data, dict) and 'collection' in data:
             all_playlists.extend(data['collection'])
 
-    logger.info(f"Fetched {len(all_playlists)} SoundCloud playlists from API")
+        # Fetch user profile to get liked track count
+        me_response = client.get(
+            'https://api.soundcloud.com/me',
+            headers={
+                'Authorization': f'OAuth {access_token}',
+                'Accept': 'application/json; charset=utf-8',
+            },
+            timeout=15,
+        )
+        me_response.raise_for_status()
+        me_data = me_response.json()
+
+    # Prepend virtual "Liked Songs" playlist
+    liked_songs_playlist = {
+        'id': 'soundcloud-liked-songs',
+        'title': 'Liked Songs',
+        'track_count': me_data.get('public_favorites_count', 0),
+        'artwork_url': '',
+        'permalink_url': 'soundcloud-liked-songs',
+        'user': {'username': me_data.get('username', '')},
+    }
+    all_playlists.insert(0, liked_songs_playlist)
+
+    logger.info(f"Fetched {len(all_playlists)} SoundCloud playlists from API (including Liked Songs)")
     return all_playlists
 
 
@@ -412,6 +435,15 @@ def soundcloud_playlist_detail_handler(event: Dict[str, Any], context: LambdaCon
 
         access_token = soundcloud_platform.token_service.decrypt_token(encrypted_access_token)
 
+        # Special handling for virtual "Liked Songs" playlist
+        if playlist_id == 'soundcloud-liked-songs':
+            raw_tracks = _fetch_soundcloud_liked_tracks(access_token)
+            tracks = _normalize_soundcloud_tracks(raw_tracks)
+            return success_response({
+                'tracks': tracks,
+                'source': 'api',
+            })
+
         # Fetch this specific playlist from SoundCloud API
         raw_playlist = _fetch_soundcloud_playlist_by_id(access_token, playlist_id)
         if not raw_playlist:
@@ -469,3 +501,64 @@ def _fetch_soundcloud_playlist_by_id(access_token: str, playlist_id: str) -> Dic
             return None
         response.raise_for_status()
         return response.json()
+
+
+def _fetch_soundcloud_liked_tracks(access_token: str) -> List[Dict[str, Any]]:
+    """Fetch all liked tracks for the authenticated SoundCloud user, paginated."""
+    tracks = []
+    url = 'https://api.soundcloud.com/me/favorites'
+
+    with httpx.Client() as client:
+        while url:
+            response = client.get(
+                url,
+                params={'limit': 200, 'linked_partitioning': 1},
+                headers={
+                    'Authorization': f'OAuth {access_token}',
+                    'Accept': 'application/json; charset=utf-8',
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if isinstance(data, list):
+                tracks.extend(data)
+                break
+            elif isinstance(data, dict):
+                tracks.extend(data.get('collection', []))
+                url = data.get('next_href')
+            else:
+                break
+
+    logger.info(f"Fetched {len(tracks)} liked tracks from SoundCloud")
+    return tracks
+
+
+def _normalize_soundcloud_tracks(raw_tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize SoundCloud track objects to the frontend Track interface."""
+    tracks = []
+    for item in raw_tracks:
+        if not item or not item.get('id'):
+            continue
+
+        artwork_url = item.get('artwork_url', '')
+        if artwork_url:
+            artwork_url = artwork_url.replace('-large', '-t500x500')
+        elif item.get('user', {}).get('avatar_url'):
+            artwork_url = item['user']['avatar_url']
+
+        tracks.append({
+            'id': f"soundcloud-{item.get('id')}",
+            'platform': 'soundcloud',
+            'name': item.get('title', 'Unknown Track'),
+            'uri': item.get('permalink_url', ''),
+            'artists': [{'name': item.get('user', {}).get('username', 'Unknown Artist')}],
+            'album': {
+                'name': item.get('user', {}).get('username', 'Unknown Artist'),
+                'images': [{'url': artwork_url}] if artwork_url else [],
+            },
+            'duration_ms': item.get('duration', 0),
+            'preview_url': item.get('stream_url'),
+        })
+    return tracks

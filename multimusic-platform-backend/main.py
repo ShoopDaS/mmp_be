@@ -29,6 +29,8 @@ from src.handlers.platforms import (
     soundcloud_callback_handler,
     soundcloud_refresh_handler,
     soundcloud_search_handler,
+    soundcloud_like_track_handler,
+    soundcloud_unlike_track_handler,
     youtube_playlists_handler,
     soundcloud_playlists_handler,
     youtube_playlist_detail_handler,
@@ -172,6 +174,22 @@ async def soundcloud_search(request: Request):
     event = await request_to_event(request)
     lambda_response = soundcloud_search_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
+
+
+@app.put("/platforms/soundcloud/tracks/{track_id}/like")
+async def like_soundcloud_track(request: Request, track_id: str):
+    """Like a SoundCloud track, synced to SoundCloud (requires auth)"""
+    event = await request_to_event(request)
+    event['pathParameters'] = {'track_id': track_id}
+    return lambda_response_to_fastapi(soundcloud_like_track_handler(event, mock_context))
+
+
+@app.delete("/platforms/soundcloud/tracks/{track_id}/like")
+async def unlike_soundcloud_track(request: Request, track_id: str):
+    """Unlike a SoundCloud track, synced to SoundCloud (requires auth)"""
+    event = await request_to_event(request)
+    event['pathParameters'] = {'track_id': track_id}
+    return lambda_response_to_fastapi(soundcloud_unlike_track_handler(event, mock_context))
 
 
 # ========== Platform Playlist Routes ==========

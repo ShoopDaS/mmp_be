@@ -443,3 +443,109 @@ def search_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
     except Exception as e:
         logger.exception("Error searching SoundCloud")
         return error_response(str(e), 500)
+
+
+@logger.inject_lambda_context
+def like_track_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
+    """
+    Like a SoundCloud track, synced back to SoundCloud.
+
+    PUT /platforms/soundcloud/tracks/{track_id}/like
+    Requires: Authorization header with Bearer token
+    """
+    try:
+        user_id = platform_handler.get_user_from_session(event)
+        if not user_id:
+            return error_response("Authentication required", 401)
+
+        path_params = event.get('pathParameters', {}) or {}
+        track_id = path_params.get('track_id', '')
+        sc_track_id = track_id.replace('soundcloud-', '')
+        if not sc_track_id:
+            return error_response("track_id is required", 400)
+
+        token_data = platform_handler.get_platform_tokens(user_id)
+        if not token_data:
+            return error_response("SoundCloud not connected", 404)
+
+        encrypted_token = token_data.get('accessToken')
+        if not encrypted_token:
+            return error_response("No access token found", 500)
+
+        access_token = platform_handler.token_service.decrypt_token(encrypted_token)
+
+        with httpx.Client() as client:
+            response = client.put(
+                f'https://api.soundcloud.com/me/favorites/{sc_track_id}',
+                headers={
+                    'Authorization': f'OAuth {access_token}',
+                    'Accept': 'application/json; charset=utf-8',
+                },
+                timeout=10,
+            )
+            if response.status_code == 404:
+                return error_response("Track not found on SoundCloud", 404)
+            response.raise_for_status()
+
+        logger.info(f"User {user_id} liked SoundCloud track {sc_track_id}")
+        return success_response({'liked': True, 'trackId': track_id})
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"SoundCloud API error: {e.response.status_code} - {e.response.text}")
+        return error_response(f"SoundCloud API error: {e.response.status_code}", 500)
+    except Exception as e:
+        logger.exception("Error liking SoundCloud track")
+        return error_response(str(e), 500)
+
+
+@logger.inject_lambda_context
+def unlike_track_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
+    """
+    Unlike a SoundCloud track, synced back to SoundCloud.
+
+    DELETE /platforms/soundcloud/tracks/{track_id}/like
+    Requires: Authorization header with Bearer token
+    """
+    try:
+        user_id = platform_handler.get_user_from_session(event)
+        if not user_id:
+            return error_response("Authentication required", 401)
+
+        path_params = event.get('pathParameters', {}) or {}
+        track_id = path_params.get('track_id', '')
+        sc_track_id = track_id.replace('soundcloud-', '')
+        if not sc_track_id:
+            return error_response("track_id is required", 400)
+
+        token_data = platform_handler.get_platform_tokens(user_id)
+        if not token_data:
+            return error_response("SoundCloud not connected", 404)
+
+        encrypted_token = token_data.get('accessToken')
+        if not encrypted_token:
+            return error_response("No access token found", 500)
+
+        access_token = platform_handler.token_service.decrypt_token(encrypted_token)
+
+        with httpx.Client() as client:
+            response = client.delete(
+                f'https://api.soundcloud.com/me/favorites/{sc_track_id}',
+                headers={
+                    'Authorization': f'OAuth {access_token}',
+                    'Accept': 'application/json; charset=utf-8',
+                },
+                timeout=10,
+            )
+            if response.status_code == 404:
+                return error_response("Track not found on SoundCloud", 404)
+            response.raise_for_status()
+
+        logger.info(f"User {user_id} unliked SoundCloud track {sc_track_id}")
+        return success_response({'liked': False, 'trackId': track_id})
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"SoundCloud API error: {e.response.status_code} - {e.response.text}")
+        return error_response(f"SoundCloud API error: {e.response.status_code}", 500)
+    except Exception as e:
+        logger.exception("Error unliking SoundCloud track")
+        return error_response(str(e), 500)

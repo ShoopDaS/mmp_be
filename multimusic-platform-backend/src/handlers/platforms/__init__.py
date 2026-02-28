@@ -13,6 +13,8 @@ from src.handlers.platforms.soundcloud import connect_handler as soundcloud_conn
 from src.handlers.platforms.soundcloud import callback_handler as soundcloud_callback_handler
 from src.handlers.platforms.soundcloud import refresh_handler as soundcloud_refresh_handler
 from src.handlers.platforms.soundcloud import search_handler as soundcloud_search_handler
+from src.handlers.platforms.soundcloud import like_track_handler as soundcloud_like_track_handler
+from src.handlers.platforms.soundcloud import unlike_track_handler as soundcloud_unlike_track_handler
 
 from src.handlers.platforms.playlists import youtube_playlists_handler
 from src.handlers.platforms.playlists import soundcloud_playlists_handler
@@ -30,6 +32,8 @@ __all__ = [
     'soundcloud_callback_handler',
     'soundcloud_refresh_handler',
     'soundcloud_search_handler',
+    'soundcloud_like_track_handler',
+    'soundcloud_unlike_track_handler',
     'youtube_playlists_handler',
     'soundcloud_playlists_handler',
     'youtube_playlist_detail_handler',
