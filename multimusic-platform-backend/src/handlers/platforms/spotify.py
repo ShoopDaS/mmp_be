@@ -59,7 +59,10 @@ def connect_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, 
                 'user-modify-playback-state',
                 'user-read-playback-state',
                 'user-library-read',
-                'user-library-modify'
+                'user-library-modify',
+                'playlist-read-private',
+                'playlist-modify-private',
+                'playlist-modify-public'
             ])
         }
         
