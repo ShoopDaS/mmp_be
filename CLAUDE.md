@@ -17,6 +17,6 @@ mmp_be/
 
 ## Project
 
-MultiMusic Platform is a multi-provider SSO backend that lets users authenticate with Google (Microsoft/GitHub planned), then connect multiple music streaming services (Spotify, YouTube Music, SoundCloud) to a single internal account.
+MultiMusic Platform is a multi-provider SSO backend that lets users authenticate with Google or Spotify (Microsoft/GitHub planned), then connect multiple music streaming services (Spotify, YouTube Music, SoundCloud) to a single internal account.
 
 All active development is in `multimusic-platform-backend/`. See its `CLAUDE.md` for dev workflow.

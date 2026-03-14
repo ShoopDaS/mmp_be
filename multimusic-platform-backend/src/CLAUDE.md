@@ -4,7 +4,7 @@
 
 | Path | Purpose |
 |------|---------|
-| `handlers/auth/` | SSO login flows (Google; Microsoft/GitHub planned) |
+| `handlers/auth/` | SSO login flows (Google + Spotify; Microsoft/GitHub planned) |
 | `handlers/platforms/` | Music platform OAuth (Spotify, YouTube, SoundCloud) |
 | `handlers/user.py` | User profile & platform management |
 | `handlers/custom_playlists.py` | Native MMP playlist CRUD |
@@ -27,7 +27,7 @@
 | SK pattern | Record type |
 |------------|-------------|
 | `PROFILE` | User profile (email, displayName, avatarUrl) |
-| `auth#google` | Linked SSO provider |
+| `auth#{provider}` | Linked SSO provider (`google`, `spotify`, etc.) |
 | `platform#spotify` | Connected music platform (encrypted tokens) |
 
 Separate tables for custom playlists and custom playlist tracks.
@@ -40,6 +40,8 @@ All access/refresh tokens are **Fernet-encrypted at rest**.
 ```
 POST   /auth/google/login
 GET    /auth/google/callback        → creates mmp_ user + JWT
+POST   /auth/spotify/login
+GET    /auth/spotify/callback       → creates mmp_ user + JWT + auto-connects Spotify
 ```
 
 ### Platform Connections
