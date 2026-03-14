@@ -33,7 +33,7 @@ mypy src/
 
 ## Architecture
 
-Users authenticate via SSO (Google) → get an internal `mmp_<uuid>` account → connect music platforms as separate linked accounts. **User identity is decoupled from music platforms** — platforms are connections, not identity.
+Users authenticate via SSO (Google or Spotify) → get an internal `mmp_<uuid>` account → connect music platforms as separate linked accounts. **User identity is decoupled from music platforms** — platforms are connections, not identity, even when Spotify login auto-connects the same platform.
 
 All handlers are written for **AWS Lambda** (event/context pattern), wrapped by FastAPI's `main.py` for local dev via Mangum adapter.
 
@@ -69,6 +69,7 @@ GOOGLE_REDIRECT_URI=http://127.0.0.1:8080/auth/google/callback
 SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8080/platforms/spotify/callback
+SPOTIFY_AUTH_REDIRECT_URI=http://127.0.0.1:8080/auth/spotify/callback
 
 YOUTUBE_CLIENT_ID=
 YOUTUBE_CLIENT_SECRET=

@@ -83,7 +83,14 @@ def callback_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str,
                 f"{FRONTEND_URL}?error={error}",
                 302
             )
-        
+
+        if not state or not auth_handler.verify_state(state):
+            logger.error("Invalid or missing OAuth state")
+            return redirect_response(
+                f"{FRONTEND_URL}?error=invalid_state",
+                302
+            )
+
         if not code:
             logger.error("No authorization code provided")
             return redirect_response(

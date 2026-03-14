@@ -16,9 +16,10 @@ try:
 except ImportError:
     LAMBDA_AVAILABLE = False
 
-# Import handlers
-from src.handlers.auth import google
-from src.handlers.platforms import (
+# Handler modules read environment variables at import time, so dotenv must load first.
+from src.handlers.auth import google  # noqa: E402
+from src.handlers.auth import spotify as spotify_auth  # noqa: E402
+from src.handlers.platforms import (  # noqa: E402
     spotify_connect_handler,
     spotify_callback_handler,
     spotify_refresh_handler,
@@ -34,8 +35,8 @@ from src.handlers.platforms import (
     youtube_playlist_detail_handler,
     soundcloud_playlist_detail_handler,
 )
-from src.handlers import user
-from src.handlers import custom_playlists
+from src.handlers import user  # noqa: E402
+from src.handlers import custom_playlists  # noqa: E402
 
 
 # Mock Lambda Context for local development
@@ -90,6 +91,22 @@ async def google_callback(request: Request):
     """Handle Google OAuth callback"""
     event = await request_to_event(request)
     lambda_response = google.callback_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.post("/auth/spotify/login")
+async def spotify_login(request: Request):
+    """Initiate Spotify OAuth login"""
+    event = await request_to_event(request)
+    lambda_response = spotify_auth.login_handler(event, mock_context)
+    return lambda_response_to_fastapi(lambda_response)
+
+
+@app.get("/auth/spotify/callback")
+async def spotify_auth_callback(request: Request):
+    """Handle Spotify OAuth callback"""
+    event = await request_to_event(request)
+    lambda_response = spotify_auth.callback_handler(event, mock_context)
     return lambda_response_to_fastapi(lambda_response)
 
 
